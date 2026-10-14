@@ -1,0 +1,8 @@
+[package]
+name = "vapor_gui_core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+eframe.workspace = true
+

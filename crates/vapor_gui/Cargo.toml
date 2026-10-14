@@ -1,0 +1,15 @@
+[package]
+name = "vapor_gui"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "vapor-gui"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.6.1", features = ["derive"] }
+eframe.workspace = true
+vapor_gui_core = { path = "../vapor_gui_core" }
+vapor_studio_ui = { path = "../../../Vapor-Studio/crates/vapor_studio_ui" }
+
