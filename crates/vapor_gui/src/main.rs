@@ -1,5 +1,4 @@
 use clap::{Parser, ValueEnum};
-use eframe::egui;
 use std::path::PathBuf;
 use vapor_gui_core::{GuiLaunch, GuiMode, GuiProduct, run_product};
 
