@@ -2,8 +2,6 @@
 name = "vapor_gui"
 version.workspace = true
 edition.workspace = true
-build = "build.rs"
-
 [[bin]]
 name = "vapor-gui"
 path = "src/main.rs"
