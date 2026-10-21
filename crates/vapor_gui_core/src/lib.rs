@@ -19,15 +19,10 @@ pub trait GuiProduct {
         &self,
         context: &eframe::CreationContext<'_>,
         launch: GuiLaunch,
-        play: bool,
     ) -> Box<dyn eframe::App>;
 }
 
-pub fn run_product(
-    product: impl GuiProduct + 'static,
-    launch: GuiLaunch,
-    play: bool,
-) -> eframe::Result<()> {
+pub fn run_product(product: impl GuiProduct + 'static, launch: GuiLaunch) -> eframe::Result<()> {
     let title = product.title();
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
@@ -39,6 +34,15 @@ pub fn run_product(
     eframe::run_native(
         title,
         options,
-        Box::new(move |context| Ok(product.create(context, launch, play))),
+        Box::new(move |context| {
+            // All Vapor GUI products start from the same theme. Individual
+            // products may refine the shared dark palette, but the host OS
+            // theme must not make Installer and Studio look like different apps.
+            context
+                .egui_ctx
+                .set_theme(eframe::egui::ThemePreference::Dark);
+            context.egui_ctx.set_visuals(eframe::egui::Visuals::dark());
+            Ok(product.create(context, launch))
+        }),
     )
 }

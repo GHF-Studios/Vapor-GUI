@@ -6,10 +6,15 @@ edition.workspace = true
 name = "vapor-gui"
 path = "src/main.rs"
 
+[[bin]]
+name = "vapor-launcher"
+path = "src/launcher.rs"
+
 [dependencies]
 clap = { version = "4.6.1", features = ["derive"] }
 eframe.workspace = true
 vapor_gui_core = { path = "../vapor_gui_core" }
+vapor_launcher_ui = { path = "../vapor_launcher_ui" }
 vapor_installer_ui = { path = "../../../Vapor-Installer/crates/vapor_installer_ui" }
 vapor_studio_ui = { path = "../../../Vapor-Studio/crates/vapor_studio_ui" }
 
