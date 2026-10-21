@@ -4,6 +4,7 @@ use std::path::PathBuf;
 pub enum GuiMode {
     Studio,
     Play,
+    Chooser,
     Installer,
     Ide,
 }
@@ -16,6 +17,15 @@ pub struct GuiLaunch {
 
 pub trait GuiProduct {
     fn title(&self) -> &'static str;
+
+    fn window_size(&self) -> [f32; 2] {
+        [1440.0, 900.0]
+    }
+
+    fn minimum_window_size(&self) -> [f32; 2] {
+        [980.0, 640.0]
+    }
+
     fn create(
         &self,
         context: &eframe::CreationContext<'_>,
@@ -25,11 +35,13 @@ pub trait GuiProduct {
 
 pub fn run_product(product: impl GuiProduct + 'static, launch: GuiLaunch) -> eframe::Result<()> {
     let title = product.title();
+    let window_size = product.window_size();
+    let minimum_window_size = product.minimum_window_size();
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title(title)
-            .with_inner_size([1440.0, 900.0])
-            .with_min_inner_size([980.0, 640.0]),
+            .with_inner_size(window_size)
+            .with_min_inner_size(minimum_window_size),
         ..Default::default()
     };
     eframe::run_native(

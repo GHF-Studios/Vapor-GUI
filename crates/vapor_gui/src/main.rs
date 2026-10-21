@@ -1,3 +1,3 @@
 fn main() -> eframe::Result<()> {
-    vapor_gui::run(vapor_gui_core::GuiMode::Studio)
+    vapor_gui::run(vapor_gui_core::GuiMode::Chooser)
 }

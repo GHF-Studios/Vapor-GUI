@@ -5,7 +5,13 @@ name = "vapor-gui"
 organization = "ghf-studios"
 version = "0.5.0"
 repository = "https://github.com/GHF-Studios/Vapor-GUI"
-binaries = ["vapor-gui", "vapor-launcher"]
+binaries = [
+    "vapor-gui",
+    "vapor-launcher",
+    "vapor-studio",
+    "vapor-ide",
+    "vapor-installer-gui",
+]
 
 [toolchain]
 channel = "stable"

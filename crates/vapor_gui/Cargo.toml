@@ -10,6 +10,18 @@ path = "src/main.rs"
 name = "vapor-launcher"
 path = "src/launcher.rs"
 
+[[bin]]
+name = "vapor-studio"
+path = "src/studio.rs"
+
+[[bin]]
+name = "vapor-ide"
+path = "src/ide.rs"
+
+[[bin]]
+name = "vapor-installer-gui"
+path = "src/installer_gui.rs"
+
 [dependencies]
 clap = { version = "4.6.1", features = ["derive"] }
 eframe.workspace = true
