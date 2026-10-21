@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 pub mod code_editor;
+pub mod panel;
 pub mod workspace_tree;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

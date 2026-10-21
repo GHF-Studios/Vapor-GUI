@@ -2,6 +2,7 @@ use std::{collections::BTreeMap, ops::Range, path::Path, sync::OnceLock};
 
 use eframe::egui::{self, Color32, FontId, TextFormat, TextStyle, text::LayoutJob};
 use egui_code_editor::{ColorTheme, Syntax, Token, TokenType};
+use vapor_console_core::RhaiLanguage;
 
 pub fn language_for_path(path: &Path) -> Option<&'static str> {
     syntax_for_path(path).map(Syntax::language)
@@ -113,16 +114,9 @@ fn syntax_for_path(path: &Path) -> Option<&'static Syntax> {
                 Syntax::new("Rhai")
                     .with_comment("//")
                     .with_comment_multiline(["/*", "*/"])
-                    .with_keywords([
-                        "as", "break", "catch", "const", "continue", "else", "export", "fn", "for",
-                        "if", "import", "in", "let", "loop", "private", "return", "throw", "try",
-                        "while",
-                    ])
-                    .with_types([
-                        "Array", "Blob", "bool", "char", "Dynamic", "FnPtr", "float", "int", "Map",
-                        "string", "Unit",
-                    ])
-                    .with_special(["false", "this", "true"]),
+                    .with_keywords(RhaiLanguage::keywords().iter().copied().collect::<std::collections::BTreeSet<_>>())
+                    .with_types(RhaiLanguage::types().iter().copied().collect::<std::collections::BTreeSet<_>>())
+                    .with_special(RhaiLanguage::literals().iter().copied().collect::<std::collections::BTreeSet<_>>()),
             ),
             (
                 "toml",
