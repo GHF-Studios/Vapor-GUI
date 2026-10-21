@@ -11,6 +11,8 @@ use vapor_client_protocol::{
     WorkshopAction, WorkshopSnapshot,
 };
 
+const WORKSHOP_RESULTS_PER_PAGE: u32 = 50;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Page {
     #[default]
@@ -211,10 +213,19 @@ impl LauncherApp {
         }
     }
 
+    fn search_workshop(&mut self, page: u32) {
+        self.send(workshop_search_action(
+            &self.workshop_query,
+            page,
+            self.workshop_kind,
+        ));
+    }
+
     fn play_page(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Your games");
-        ui.label("Choose a composition, then install, repair, update, or play it.");
-        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            ui.heading("Play");
+            ui.weak("Choose a game to continue.");
+        });
         let Some(snapshot) = self
             .service
             .as_ref()
@@ -225,66 +236,86 @@ impl LauncherApp {
         };
         let compositions = &snapshot.durable_state.compositions.compositions;
         if compositions.is_empty() {
-            ui.label("No compositions yet. Browse Workshop or create one in Vapor Studio.");
+            ui.label("No games are installed yet.");
+            if ui.button("Find a game in Workshop").clicked() {
+                self.page = Page::Workshop;
+                self.workshop_kind = Some(ContentKind::Game);
+                self.workshop_query.clear();
+                self.search_workshop(1);
+            }
             return;
         }
         ui.horizontal(|ui| {
-            ui.label("Search");
-            ui.text_edit_singleline(&mut self.query);
+            ui.add(
+                egui::TextEdit::singleline(&mut self.query)
+                    .hint_text("Find a game")
+                    .desired_width(ui.available_width()),
+            );
         });
         let query = self.query.trim().to_lowercase();
-        let filtered: Vec<_> = compositions
+        let mut filtered: Vec<_> = compositions
             .iter()
             .filter(|item| query.is_empty() || item.name.to_lowercase().contains(&query))
-            .cloned()
             .collect();
-        ui.add_space(8.0);
+        filtered.sort_by_key(|composition| {
+            snapshot.active_composition_id.as_deref() != Some(composition.id.as_str())
+        });
+        ui.add_space(4.0);
         egui::ScrollArea::vertical().show(ui, |ui| {
             for composition in filtered {
-                let active = snapshot.active_composition_id.as_deref() == Some(&composition.id);
-                let (intent, action) = composition_action(&composition);
-                egui::Frame::group(ui.style()).show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
-                            ui.heading(&composition.name);
-                            if active {
-                                ui.label("Selected composition");
-                            }
-                            ui.label(composition_summary(&composition));
-                        });
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button(intent_label(intent)).clicked() {
-                                if let Some(action) = action.clone() {
-                                    self.send(action);
-                                } else {
-                                    self.page = Page::Workshop;
-                                    self.send(ClientAction::Workshop(WorkshopAction::Search {
-                                        query: String::new(),
-                                        page: 0,
-                                        required_tags: Vec::new(),
-                                    }));
+                let active =
+                    snapshot.active_composition_id.as_deref() == Some(composition.id.as_str());
+                let (intent, action) = composition_action(composition);
+                egui::Frame::group(ui.style())
+                    .inner_margin(egui::Margin::symmetric(9, 6))
+                    .show(ui, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.vertical(|ui| {
+                                ui.strong(&composition.name);
+                                ui.weak(composition_summary(composition));
+                                if active {
+                                    ui.label(egui::RichText::new("Selected").small().weak());
                                 }
-                            }
-                            if !active && ui.button("Select").clicked() {
-                                self.send(ClientAction::Composition(CompositionAction::Select {
-                                    composition_id: composition.id.clone(),
-                                }));
-                            }
+                            });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.button(intent_label(intent)).clicked() {
+                                        if let Some(action) = action.clone() {
+                                            self.send(action);
+                                        } else {
+                                            self.page = Page::Workshop;
+                                            self.workshop_query.clear();
+                                            self.workshop_kind = None;
+                                            self.search_workshop(1);
+                                        }
+                                    }
+                                    if !active && ui.small_button("Select").clicked() {
+                                        self.send(ClientAction::Composition(
+                                            CompositionAction::Select {
+                                                composition_id: composition.id.clone(),
+                                            },
+                                        ));
+                                    }
+                                },
+                            );
                         });
                     });
-                });
-                ui.add_space(6.0);
             }
         });
     }
 
     fn library_page(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Library");
-        ui.label("Installed and downloaded content available to your compositions.");
-        ui.add_space(8.0);
         ui.horizontal(|ui| {
-            ui.label("Search");
-            ui.text_edit_singleline(&mut self.query);
+            ui.heading("Library");
+            ui.weak("Games and add-ons on this device.");
+        });
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.query)
+                    .hint_text("Find content")
+                    .desired_width(ui.available_width()),
+            );
         });
         let Some(snapshot) = self
             .service
@@ -350,11 +381,8 @@ impl LauncherApp {
                                     self.workshop_query =
                                         entry.name.as_deref().unwrap_or(&entry.id).to_owned();
                                     self.page = Page::Workshop;
-                                    self.send(ClientAction::Workshop(WorkshopAction::Search {
-                                        query: self.workshop_query.clone(),
-                                        page: 0,
-                                        required_tags: Vec::new(),
-                                    }));
+                                    self.workshop_kind = None;
+                                    self.search_workshop(1);
                                 }
                             } else {
                                 ui.label("Not installed");
@@ -368,12 +396,16 @@ impl LauncherApp {
     }
 
     fn workshop_page(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Workshop");
-        ui.label("Find community content and manage your subscriptions.");
-        ui.add_space(8.0);
         ui.horizontal(|ui| {
-            ui.label("Search");
-            ui.text_edit_singleline(&mut self.workshop_query);
+            ui.heading("Workshop");
+            ui.weak("Find games and add-ons.");
+        });
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.workshop_query)
+                    .hint_text("Search Workshop")
+                    .desired_width(ui.available_width().min(260.0)),
+            );
             egui::ComboBox::from_label("Content type")
                 .selected_text(
                     self.workshop_kind
@@ -393,16 +425,16 @@ impl LauncherApp {
                         );
                     }
                 });
-            if ui.button("Search Workshop").clicked() {
-                let required_tags = self
-                    .workshop_kind
-                    .map(|kind| vec![kind.as_str().to_owned()])
-                    .unwrap_or_default();
-                self.send(ClientAction::Workshop(WorkshopAction::Search {
-                    query: self.workshop_query.clone(),
-                    page: 0,
-                    required_tags,
-                }));
+            let busy = self
+                .service
+                .as_ref()
+                .and_then(|service| service.latest_snapshot().active_operation.as_ref())
+                .is_some();
+            if ui
+                .add_enabled(!busy, egui::Button::new("Search Workshop"))
+                .clicked()
+            {
+                self.search_workshop(1);
             }
         });
         let Some(snapshot) = self
@@ -419,6 +451,17 @@ impl LauncherApp {
 
 fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: WorkshopSnapshot) {
     let subscription_ids = snapshot_subscription_ids(&snapshot);
+    let (busy, search) = app
+        .service
+        .as_ref()
+        .map(|service| {
+            let snapshot = service.latest_snapshot();
+            (
+                snapshot.active_operation.is_some(),
+                snapshot.workshop.search.clone(),
+            )
+        })
+        .unwrap_or_default();
     ui.separator();
     ui.heading("Subscriptions");
     if !snapshot.subscriptions_loaded {
@@ -428,7 +471,23 @@ fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: Wo
     }
     for item in &snapshot.subscriptions {
         ui.horizontal(|ui| {
-            ui.label(&item.title);
+            ui.vertical(|ui| {
+                ui.label(&item.title);
+                if item.downloading {
+                    match item.download_progress {
+                        Some((downloaded, total)) if total > 0 => {
+                            ui.add(
+                                egui::ProgressBar::new(downloaded as f32 / total as f32)
+                                    .desired_width(140.0)
+                                    .show_percentage(),
+                            );
+                        }
+                        _ => {
+                            ui.weak("Downloading…");
+                        }
+                    }
+                }
+            });
             ui.label(if item.downloading {
                 "Downloading…"
             } else if item.needs_update {
@@ -438,12 +497,12 @@ fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: Wo
             } else {
                 "Subscribed"
             });
-            if !item.installed && !item.downloading && ui.button("Download").clicked() {
+            if !busy && !item.installed && !item.downloading && ui.button("Download").clicked() {
                 app.send(ClientAction::Workshop(WorkshopAction::Acquire {
                     item_ids: vec![item.published_file_id.clone()],
                 }));
             }
-            if ui.button("Unsubscribe").clicked() {
+            if !busy && ui.button("Unsubscribe").clicked() {
                 app.send(ClientAction::Workshop(WorkshopAction::Unsubscribe {
                     item_ids: vec![item.published_file_id.clone()],
                 }));
@@ -452,7 +511,54 @@ fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: Wo
     }
     ui.separator();
     ui.heading("Search results");
-    if let Some(results) = snapshot.search {
+    if let Some(results) = search {
+        let controls_match_results =
+            workshop_search_matches_controls(&results, &app.workshop_query, app.workshop_kind);
+        let page_count = workshop_page_count(results.total_results);
+        ui.horizontal(|ui| {
+            ui.weak(format!(
+                "{} · page {} of {} · {} items",
+                if results.query.is_empty() {
+                    "All Workshop items"
+                } else {
+                    "Search results"
+                },
+                results.page,
+                page_count,
+                results.total_results
+            ));
+            if !controls_match_results {
+                ui.colored_label(egui::Color32::YELLOW, "Filters changed · Search to apply");
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add_enabled(
+                        !busy && controls_match_results && results.page < page_count,
+                        egui::Button::new("Next →"),
+                    )
+                    .clicked()
+                {
+                    app.send(ClientAction::Workshop(WorkshopAction::Search {
+                        query: results.query.clone(),
+                        page: results.page + 1,
+                        required_tags: results.required_tags.clone(),
+                    }));
+                }
+                if ui
+                    .add_enabled(
+                        !busy && controls_match_results && results.page > 1,
+                        egui::Button::new("← Previous"),
+                    )
+                    .clicked()
+                {
+                    app.send(ClientAction::Workshop(WorkshopAction::Search {
+                        query: results.query.clone(),
+                        page: results.page - 1,
+                        required_tags: results.required_tags.clone(),
+                    }));
+                }
+            });
+        });
         if results.items.is_empty() {
             ui.label("No matching items.");
         }
@@ -467,7 +573,7 @@ fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: Wo
                             .unwrap_or("Community content"),
                     );
                 });
-                if !subscribed && ui.button("Subscribe").clicked() {
+                if !busy && !subscribed && ui.button("Subscribe").clicked() {
                     app.send(ClientAction::Workshop(WorkshopAction::Subscribe {
                         item_ids: vec![item.published_file_id],
                     }));
@@ -485,6 +591,16 @@ fn snapshot_subscription_ids(snapshot: &WorkshopSnapshot) -> Vec<String> {
         .iter()
         .map(|item| item.published_file_id.clone())
         .collect()
+}
+
+fn workshop_search_action(query: &str, page: u32, kind: Option<ContentKind>) -> ClientAction {
+    ClientAction::Workshop(WorkshopAction::Search {
+        query: query.trim().to_owned(),
+        page: page.max(1),
+        required_tags: kind
+            .map(|kind| vec![kind.as_str().to_owned()])
+            .unwrap_or_default(),
+    })
 }
 
 fn connect_service() -> Result<Client, vapor_client::ClientError> {
@@ -548,6 +664,21 @@ fn workshop_item_kind(tags: &[String]) -> Option<ContentKind> {
     tags.iter().find_map(|tag| tag.parse::<ContentKind>().ok())
 }
 
+fn workshop_search_matches_controls(
+    search: &vapor_client_protocol::WorkshopSearchSnapshot,
+    query: &str,
+    kind: Option<ContentKind>,
+) -> bool {
+    let selected_tags = kind
+        .map(|kind| vec![kind.as_str().to_owned()])
+        .unwrap_or_default();
+    search.query == query.trim() && search.required_tags == selected_tags
+}
+
+fn workshop_page_count(total_results: u32) -> u32 {
+    total_results.div_ceil(WORKSHOP_RESULTS_PER_PAGE).max(1)
+}
+
 impl eframe::App for LauncherApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         if !self.connect_attempted {
@@ -555,6 +686,7 @@ impl eframe::App for LauncherApp {
         }
         self.poll_connection();
         self.poll_service();
+        ui.spacing_mut().item_spacing = egui::vec2(8.0, 6.0);
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
                 ui.heading("Vapor Launcher");
@@ -660,5 +792,57 @@ mod tests {
         assert_eq!(workshop_item_kind(&tags), Some(ContentKind::GameMod));
         assert_eq!(friendly_kind("game-mod"), "Game add-on");
         assert_eq!(workshop_item_kind(&["survival".to_owned()]), None);
+    }
+
+    #[test]
+    fn launcher_workshop_search_uses_service_page_numbering_and_selected_type() {
+        assert_eq!(
+            workshop_search_action("  moon  ", 0, Some(ContentKind::Game)),
+            ClientAction::Workshop(WorkshopAction::Search {
+                query: "moon".into(),
+                page: 1,
+                required_tags: vec!["game".into()],
+            })
+        );
+        assert_eq!(
+            workshop_search_action("", 2, None),
+            ClientAction::Workshop(WorkshopAction::Search {
+                query: String::new(),
+                page: 2,
+                required_tags: vec![],
+            })
+        );
+    }
+
+    #[test]
+    fn launcher_workshop_page_count_accounts_for_partial_final_page() {
+        assert_eq!(workshop_page_count(0), 1);
+        assert_eq!(workshop_page_count(50), 1);
+        assert_eq!(workshop_page_count(51), 2);
+        assert_eq!(workshop_page_count(100), 2);
+        assert_eq!(workshop_page_count(101), 3);
+    }
+
+    #[test]
+    fn workshop_paging_does_not_restore_unsubmitted_filters() {
+        let search = vapor_client_protocol::WorkshopSearchSnapshot {
+            revision: 1,
+            query: "moon".into(),
+            page: 1,
+            total_results: 73,
+            required_tags: vec!["game".into()],
+            items: vec![],
+        };
+        assert!(workshop_search_matches_controls(
+            &search,
+            " moon ",
+            Some(ContentKind::Game)
+        ));
+        assert!(!workshop_search_matches_controls(
+            &search,
+            "planet",
+            Some(ContentKind::Game)
+        ));
+        assert!(!workshop_search_matches_controls(&search, "moon", None));
     }
 }

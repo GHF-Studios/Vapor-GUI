@@ -8,3 +8,4 @@ eframe.workspace = true
 vapor_gui_core = { path = "../vapor_gui_core" }
 vapor_client = { path = "../../../Vapor/crates/vapor_client" }
 vapor_client_protocol = { path = "../../../Vapor/crates/vapor_client_protocol" }
+serde_json = "1"

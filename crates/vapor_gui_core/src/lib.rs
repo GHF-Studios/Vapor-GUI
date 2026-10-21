@@ -1,8 +1,13 @@
 use std::path::PathBuf;
 
+pub mod code_editor;
+pub mod workspace_tree;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GuiMode {
     Studio,
+    Launcher,
+    /// Backwards-compatible name accepted by the original GUI host.
     Play,
     Chooser,
     Installer,
@@ -13,6 +18,7 @@ pub enum GuiMode {
 pub struct GuiLaunch {
     pub workspace: Option<PathBuf>,
     pub app_root: Option<PathBuf>,
+    pub first_launch: bool,
 }
 
 pub trait GuiProduct {

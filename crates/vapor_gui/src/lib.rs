@@ -1,5 +1,5 @@
 use clap::{Parser, ValueEnum};
-use std::{path::PathBuf, process::Command};
+use std::path::PathBuf;
 use vapor_gui_core::{GuiLaunch, GuiMode, GuiProduct, run_product};
 
 #[derive(Debug, Parser)]
@@ -14,11 +14,14 @@ struct Args {
     workspace: Option<PathBuf>,
     #[arg(long)]
     app_root: Option<PathBuf>,
+    #[arg(long)]
+    first_launch: bool,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ModeArg {
     Studio,
+    Launcher,
     Play,
     Chooser,
     Installer,
@@ -29,6 +32,7 @@ impl From<ModeArg> for GuiMode {
     fn from(value: ModeArg) -> Self {
         match value {
             ModeArg::Studio => Self::Studio,
+            ModeArg::Launcher => Self::Launcher,
             ModeArg::Play => Self::Play,
             ModeArg::Chooser => Self::Chooser,
             ModeArg::Installer => Self::Installer,
@@ -43,12 +47,13 @@ pub fn run(default_mode: GuiMode) -> eframe::Result<()> {
     let launch = GuiLaunch {
         workspace: args.workspace,
         app_root: args.app_root,
+        first_launch: args.first_launch,
     };
     match mode {
         GuiMode::Chooser => run_product(ChooserProduct, launch),
         GuiMode::Installer => run_product(InstallerProduct, launch),
         GuiMode::Ide => run_product(IdeProduct, launch),
-        GuiMode::Play => run_product(LauncherProduct, launch),
+        GuiMode::Launcher | GuiMode::Play => run_product(LauncherProduct, launch),
         GuiMode::Studio => run_product(StudioProduct, launch),
     }
 }
@@ -76,6 +81,14 @@ impl GuiProduct for LauncherProduct {
         "Vapor Launcher"
     }
 
+    fn window_size(&self) -> [f32; 2] {
+        [600.0, 420.0]
+    }
+
+    fn minimum_window_size(&self) -> [f32; 2] {
+        [520.0, 360.0]
+    }
+
     fn create(
         &self,
         context: &eframe::CreationContext<'_>,
@@ -97,11 +110,11 @@ impl GuiProduct for ChooserProduct {
     }
 
     fn window_size(&self) -> [f32; 2] {
-        [720.0, 560.0]
+        [560.0, 430.0]
     }
 
     fn minimum_window_size(&self) -> [f32; 2] {
-        [620.0, 500.0]
+        [500.0, 370.0]
     }
 
     fn create(
@@ -116,6 +129,7 @@ impl GuiProduct for ChooserProduct {
 #[derive(Default)]
 struct ChooserApp {
     message: Option<String>,
+    close_requested: bool,
 }
 
 impl ChooserApp {
@@ -130,18 +144,25 @@ impl ChooserApp {
             if !entrypoint.is_file() {
                 return Err(format!("{label} is unavailable in this installation."));
             }
-            Command::new(entrypoint)
+            vapor_core::managed_process::background_command(entrypoint)
                 .arg(mode)
                 .spawn()
                 .map(|_| ())
                 .map_err(|_| format!("Could not open {label}. Try repairing Vapor."))
         })();
-        self.message = result.err();
+        match result {
+            Ok(()) => {
+                self.message = None;
+                self.close_requested = true;
+            }
+            Err(error) => self.message = Some(error),
+        }
     }
 }
 
 impl eframe::App for ChooserApp {
     fn ui(&mut self, ui: &mut eframe::egui::Ui, _frame: &mut eframe::Frame) {
+        ui.spacing_mut().item_spacing = eframe::egui::vec2(7.0, 4.0);
         ui.vertical_centered(|ui| {
             ui.add_space(8.0);
             ui.heading("Welcome to Vapor");
@@ -149,47 +170,55 @@ impl eframe::App for ChooserApp {
             ui.add_space(12.0);
         });
 
-        ui.group(|ui| {
-            ui.label(eframe::egui::RichText::new("APPS").strong());
-            ui.add_space(4.0);
-            for (title, description, mode) in [
-                (
-                    "Vapor Launcher",
-                    "Choose a composition and play.",
-                    "launcher",
-                ),
-                (
-                    "Vapor Studio",
-                    "Discover content and create compositions.",
-                    "studio",
-                ),
-                ("Vapor IDE", "Work on Rust projects and code.", "ide"),
-            ] {
-                self.product_row(ui, title, description, mode);
-            }
-        });
+        eframe::egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.group(|ui| {
+                    ui.label(eframe::egui::RichText::new("APPS").strong());
+                    ui.add_space(4.0);
+                    for (title, description, mode) in [
+                        (
+                            "Vapor Launcher",
+                            "Choose a composition and play.",
+                            "launcher",
+                        ),
+                        (
+                            "Vapor Studio",
+                            "Discover content and create compositions.",
+                            "studio",
+                        ),
+                        ("Vapor IDE", "Work on Rust projects and code.", "ide"),
+                    ] {
+                        self.product_row(ui, title, description, mode);
+                    }
+                });
 
-        ui.add_space(10.0);
-        ui.group(|ui| {
-            ui.label(eframe::egui::RichText::new("SETUP & ADVANCED TOOLS").strong());
-            ui.add_space(4.0);
-            self.product_row(
-                ui,
-                "Vapor Installer",
-                "Set up, repair, or change this installation.",
-                "installer",
-            );
-            self.product_row(
-                ui,
-                "Vapor Shell",
-                "Open the command line for advanced work.",
-                "shell",
-            );
-        });
+                ui.add_space(8.0);
+                ui.group(|ui| {
+                    ui.label(eframe::egui::RichText::new("SETUP & ADVANCED TOOLS").strong());
+                    ui.add_space(4.0);
+                    self.product_row(
+                        ui,
+                        "Vapor Installer",
+                        "Set up, repair, or change this installation.",
+                        "installer",
+                    );
+                    self.product_row(
+                        ui,
+                        "Vapor Shell",
+                        "Open the command line for advanced work.",
+                        "shell",
+                    );
+                });
+            });
 
         if let Some(message) = &self.message {
             ui.add_space(8.0);
             ui.colored_label(eframe::egui::Color32::LIGHT_RED, message);
+        }
+        if self.close_requested {
+            ui.ctx()
+                .send_viewport_cmd(eframe::egui::ViewportCommand::Close);
         }
     }
 }
@@ -225,6 +254,14 @@ impl GuiProduct for IdeProduct {
         "Vapor IDE"
     }
 
+    fn window_size(&self) -> [f32; 2] {
+        [1480.0, 940.0]
+    }
+
+    fn minimum_window_size(&self) -> [f32; 2] {
+        [860.0, 560.0]
+    }
+
     fn create(
         &self,
         context: &eframe::CreationContext<'_>,
@@ -244,6 +281,9 @@ impl GuiProduct for InstallerProduct {
         _context: &eframe::CreationContext<'_>,
         launch: GuiLaunch,
     ) -> Box<dyn eframe::App> {
-        Box::new(vapor_installer_ui::InstallerApp::new(launch.app_root))
+        Box::new(vapor_installer_ui::InstallerApp::new(
+            launch.app_root,
+            launch.first_launch,
+        ))
     }
 }

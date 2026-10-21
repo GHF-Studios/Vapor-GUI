@@ -6,3 +6,4 @@ edition.workspace = true
 [dependencies]
 eframe.workspace = true
 
+egui_code_editor = { version = "=0.2.24", default-features = false }
