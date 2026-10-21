@@ -6,9 +6,9 @@ use std::{
 };
 use vapor_client::{Client, ClientHostConfig, service_sibling_path};
 use vapor_client_protocol::{
-    CatalogAction, CatalogItemRole, CatalogLocationKind, ClientAction, ClientEvent, Composition,
-    CompositionAction, ContentKind, InstallationState, OperationStatus, ProtocolFrame,
-    WorkshopAction, WorkshopSnapshot,
+    CatalogAction, CatalogEntry, CatalogItemAction, CatalogItemRole, CatalogLocationKind,
+    ClientAction, ClientEvent, Composition, CompositionAction, ContentKind, InstallationState,
+    OperationStatus, ProtocolFrame, WorkshopAction, WorkshopSnapshot,
 };
 
 const WORKSHOP_RESULTS_PER_PAGE: u32 = 50;
@@ -67,6 +67,26 @@ fn composition_action(composition: &Composition) -> (CompositionIntent, Option<C
         }),
     };
     (intent, action.map(ClientAction::Composition))
+}
+
+fn create_composition_action(entry: &CatalogEntry) -> Option<ClientAction> {
+    if entry.role != CatalogItemRole::PlayableComposition
+        || !entry
+            .actions
+            .contains(&CatalogItemAction::CreateComposition)
+    {
+        return None;
+    }
+    Some(ClientAction::Composition(
+        CompositionAction::CreateFromContent {
+            name: entry
+                .name
+                .clone()
+                .unwrap_or_else(|| "New composition".to_owned()),
+            content_id: entry.id.clone(),
+            content_version: entry.version.clone()?,
+        },
+    ))
 }
 
 pub struct LauncherApp {
@@ -363,6 +383,11 @@ impl LauncherApp {
                 let is_installed = entry.locations.iter().any(|location| {
                     location.enabled && matches!(location.kind, CatalogLocationKind::Installed)
                 });
+                let is_downloaded = entry
+                    .locations
+                    .iter()
+                    .any(|location| location.kind == CatalogLocationKind::Cache);
+                let add_to_play = create_composition_action(&entry);
                 egui::Frame::group(ui.style()).show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
@@ -374,8 +399,15 @@ impl LauncherApp {
                             ));
                         });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if is_installed {
+                            if let Some(action) = add_to_play.clone() {
+                                if ui.button("Add to Play").clicked() {
+                                    self.send(action);
+                                    self.page = Page::Play;
+                                }
+                            } else if is_installed {
                                 ui.label("Available");
+                            } else if is_downloaded {
+                                ui.label("Downloaded");
                             } else if entry.published_file_id.is_some() {
                                 if ui.button("Find in Workshop").clicked() {
                                     self.workshop_query =
@@ -451,7 +483,7 @@ impl LauncherApp {
 
 fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: WorkshopSnapshot) {
     let subscription_ids = snapshot_subscription_ids(&snapshot);
-    let (busy, search) = app
+    let (busy, search, catalog) = app
         .service
         .as_ref()
         .map(|service| {
@@ -459,9 +491,10 @@ fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: Wo
             (
                 snapshot.active_operation.is_some(),
                 snapshot.workshop.search.clone(),
+                snapshot.catalog.clone(),
             )
         })
-        .unwrap_or_default();
+        .unwrap_or_else(|| (false, None, Vec::new()));
     ui.separator();
     ui.heading("Subscriptions");
     if !snapshot.subscriptions_loaded {
@@ -470,6 +503,10 @@ fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: Wo
         ui.label("You have no subscriptions yet.");
     }
     for item in &snapshot.subscriptions {
+        let playable = catalog.iter().find(|entry| {
+            entry.published_file_id.as_deref() == Some(item.published_file_id.as_str())
+        });
+        let add_to_play = playable.and_then(create_composition_action);
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 ui.label(&item.title);
@@ -501,6 +538,14 @@ fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: Wo
                 app.send(ClientAction::Workshop(WorkshopAction::Acquire {
                     item_ids: vec![item.published_file_id.clone()],
                 }));
+            }
+            if !busy
+                && item.installed
+                && let Some(action) = add_to_play.clone()
+                && ui.button("Add to Play").clicked()
+            {
+                app.send(action);
+                app.page = Page::Play;
             }
             if !busy && ui.button("Unsubscribe").clicked() {
                 app.send(ClientAction::Workshop(WorkshopAction::Unsubscribe {
@@ -564,6 +609,10 @@ fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: Wo
         }
         for item in results.items {
             let subscribed = subscription_ids.contains(&item.published_file_id);
+            let playable = catalog.iter().find(|entry| {
+                entry.published_file_id.as_deref() == Some(item.published_file_id.as_str())
+            });
+            let add_to_play = playable.and_then(create_composition_action);
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.label(egui::RichText::new(&item.title).strong());
@@ -577,6 +626,13 @@ fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: Wo
                     app.send(ClientAction::Workshop(WorkshopAction::Subscribe {
                         item_ids: vec![item.published_file_id],
                     }));
+                }
+                if !busy
+                    && let Some(action) = add_to_play
+                    && ui.button("Add to Play").clicked()
+                {
+                    app.send(action);
+                    app.page = Page::Play;
                 }
             });
         }
@@ -769,6 +825,38 @@ mod tests {
             }),
             CompositionIntent::Repair
         );
+    }
+
+    #[test]
+    fn launcher_only_offers_add_to_play_for_service_eligible_packagepacks() {
+        let mut entry = CatalogEntry {
+            id: "examples/wheel".into(),
+            name: Some("Wheel Salvage Demo".into()),
+            version: Some("0.1.1".into()),
+            kind: "packagepack".into(),
+            published_file_id: Some("3823734148".into()),
+            dependencies: vec![],
+            conflicts: vec![],
+            locations: vec![],
+            role: CatalogItemRole::PlayableComposition,
+            actions: vec![CatalogItemAction::CreateComposition],
+        };
+        assert_eq!(
+            create_composition_action(&entry),
+            Some(ClientAction::Composition(
+                CompositionAction::CreateFromContent {
+                    name: "Wheel Salvage Demo".into(),
+                    content_id: "examples/wheel".into(),
+                    content_version: "0.1.1".into(),
+                }
+            ))
+        );
+
+        entry.actions.clear();
+        assert_eq!(create_composition_action(&entry), None);
+        entry.actions.push(CatalogItemAction::CreateComposition);
+        entry.version = None;
+        assert_eq!(create_composition_action(&entry), None);
     }
 
     #[test]
