@@ -114,9 +114,24 @@ fn syntax_for_path(path: &Path) -> Option<&'static Syntax> {
                 Syntax::new("Rhai")
                     .with_comment("//")
                     .with_comment_multiline(["/*", "*/"])
-                    .with_keywords(RhaiLanguage::keywords().iter().copied().collect::<std::collections::BTreeSet<_>>())
-                    .with_types(RhaiLanguage::types().iter().copied().collect::<std::collections::BTreeSet<_>>())
-                    .with_special(RhaiLanguage::literals().iter().copied().collect::<std::collections::BTreeSet<_>>()),
+                    .with_keywords(
+                        RhaiLanguage::keywords()
+                            .iter()
+                            .copied()
+                            .collect::<std::collections::BTreeSet<_>>(),
+                    )
+                    .with_types(
+                        RhaiLanguage::types()
+                            .iter()
+                            .copied()
+                            .collect::<std::collections::BTreeSet<_>>(),
+                    )
+                    .with_special(
+                        RhaiLanguage::literals()
+                            .iter()
+                            .copied()
+                            .collect::<std::collections::BTreeSet<_>>(),
+                    ),
             ),
             (
                 "toml",

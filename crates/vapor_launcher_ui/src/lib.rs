@@ -204,9 +204,10 @@ fn composition_uses_content<'a>(
             .root_package
             .as_ref()
             .is_some_and(|root| root.id == content_id)
-            || composition.resolved_graph.as_ref().is_some_and(|graph| {
-                graph.nodes.iter().any(|node| node.content.id == content_id)
-            })
+            || composition
+                .resolved_graph
+                .as_ref()
+                .is_some_and(|graph| graph.nodes.iter().any(|node| node.content.id == content_id))
     })
 }
 
@@ -242,10 +243,7 @@ pub struct LauncherApp {
 }
 
 impl LauncherApp {
-    pub fn new(
-        creation: &eframe::CreationContext<'_>,
-        _launch: vapor_gui_core::GuiLaunch,
-    ) -> Self {
+    pub fn new(creation: &eframe::CreationContext<'_>, _launch: vapor_gui_core::GuiLaunch) -> Self {
         Self {
             page: Page::Play,
             service: None,
@@ -441,38 +439,33 @@ impl LauncherApp {
                     snapshot.active_composition_id.as_deref() == Some(composition.id.as_str());
                 let (intent, action) = composition_action(composition);
                 vapor_gui_core::panel::Panel::new(&composition.name, |ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.vertical(|ui| {
-                                if active {
-                                    ui.label(egui::RichText::new("Selected").small().weak());
-                                }
-                            });
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if ui.button(intent_label(intent)).clicked() {
-                                        if let Some(action) = action.clone() {
-                                            self.send(action);
-                                        } else {
-                                            self.page = Page::Workshop;
-                                            self.workshop_query.clear();
-                                            self.workshop_kind = None;
-                                            self.search_workshop(1);
-                                        }
-                                    }
-                                    if !active && ui.small_button("Select").clicked() {
-                                        self.send(ClientAction::Composition(
-                                            CompositionAction::Select {
-                                                composition_id: composition.id.clone(),
-                                            },
-                                        ));
-                                    }
-                                },
-                            );
+                    ui.horizontal_wrapped(|ui| {
+                        ui.vertical(|ui| {
+                            if active {
+                                ui.label(egui::RichText::new("Selected").small().weak());
+                            }
                         });
-                    })
-                    .description(composition_summary(composition))
-                    .show(ui);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button(intent_label(intent)).clicked() {
+                                if let Some(action) = action.clone() {
+                                    self.send(action);
+                                } else {
+                                    self.page = Page::Workshop;
+                                    self.workshop_query.clear();
+                                    self.workshop_kind = None;
+                                    self.search_workshop(1);
+                                }
+                            }
+                            if !active && ui.small_button("Select").clicked() {
+                                self.send(ClientAction::Composition(CompositionAction::Select {
+                                    composition_id: composition.id.clone(),
+                                }));
+                            }
+                        });
+                    });
+                })
+                .description(composition_summary(composition))
+                .show(ui);
             }
         });
     }
@@ -705,49 +698,49 @@ impl LauncherApp {
         });
         if self.workshop_view == WorkshopView::Discover {
             vapor_gui_core::panel::Panel::new("Discover", |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.workshop_query)
-                        .hint_text("Search Workshop")
-                        .desired_width(ui.available_width().min(320.0)),
-                );
-                let mut kind_changed = false;
-                egui::ComboBox::from_label("Content type")
-                    .selected_text(
-                        self.workshop_kind
-                            .map(|kind| friendly_kind(kind.as_str()))
-                            .unwrap_or("All types"),
-                    )
-                    .show_ui(ui, |ui| {
-                        kind_changed |= ui
-                            .selectable_value(&mut self.workshop_kind, None, "All types")
-                            .changed();
-                        for kind in ContentKind::ALL
-                            .into_iter()
-                            .filter(|kind| *kind != ContentKind::Crate)
-                        {
+                ui.horizontal_wrapped(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.workshop_query)
+                            .hint_text("Search Workshop")
+                            .desired_width(ui.available_width().min(320.0)),
+                    );
+                    let mut kind_changed = false;
+                    egui::ComboBox::from_label("Content type")
+                        .selected_text(
+                            self.workshop_kind
+                                .map(|kind| friendly_kind(kind.as_str()))
+                                .unwrap_or("All types"),
+                        )
+                        .show_ui(ui, |ui| {
                             kind_changed |= ui
-                                .selectable_value(
-                                    &mut self.workshop_kind,
-                                    Some(kind),
-                                    friendly_kind(kind.as_str()),
-                                )
+                                .selectable_value(&mut self.workshop_kind, None, "All types")
                                 .changed();
-                        }
-                    });
-                let busy = self
-                    .service
-                    .as_ref()
-                    .and_then(|service| service.latest_snapshot().active_operation.as_ref())
-                    .is_some();
-                if ui
-                    .add_enabled(!busy, egui::Button::new("Search Workshop"))
-                    .clicked()
-                    || (kind_changed && !busy)
-                {
-                    self.search_workshop(1);
-                }
-            });
+                            for kind in ContentKind::ALL
+                                .into_iter()
+                                .filter(|kind| *kind != ContentKind::Crate)
+                            {
+                                kind_changed |= ui
+                                    .selectable_value(
+                                        &mut self.workshop_kind,
+                                        Some(kind),
+                                        friendly_kind(kind.as_str()),
+                                    )
+                                    .changed();
+                            }
+                        });
+                    let busy = self
+                        .service
+                        .as_ref()
+                        .and_then(|service| service.latest_snapshot().active_operation.as_ref())
+                        .is_some();
+                    if ui
+                        .add_enabled(!busy, egui::Button::new("Search Workshop"))
+                        .clicked()
+                        || (kind_changed && !busy)
+                    {
+                        self.search_workshop(1);
+                    }
+                });
             })
             .description("Find games and add-ons. Type and tag filters apply to the next search.")
             .show(ui);
@@ -821,7 +814,10 @@ fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: Wo
                 });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .add_enabled(!busy && results.page < page_count, egui::Button::new("Next →"))
+                    .add_enabled(
+                        !busy && results.page < page_count,
+                        egui::Button::new("Next →"),
+                    )
                     .clicked()
                 {
                     app.workshop_result_offset = 0;
@@ -872,7 +868,10 @@ fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: Wo
                     app.workshop_result_offset += app.workshop_page_size;
                     app.selected_workshop_items.clear();
                 }
-                ui.weak(format!("{} items returned in this Steam page", results.items.len()));
+                ui.weak(format!(
+                    "{} items returned in this Steam page",
+                    results.items.len()
+                ));
             });
         }
     } else if search.is_some() {
@@ -907,7 +906,8 @@ fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: Wo
     selectable.dedup();
     ui.horizontal(|ui| {
         if ui.small_button("Select visible").clicked() {
-            app.selected_workshop_items.extend(selectable.iter().cloned());
+            app.selected_workshop_items
+                .extend(selectable.iter().cloned());
         }
         if ui.small_button("Clear selection").clicked() {
             app.selected_workshop_items.clear();
@@ -924,7 +924,10 @@ fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: Wo
             .map(|row| row.published_file_id.clone())
             .collect();
         if ui
-            .add_enabled(!busy && !unsubscribed.is_empty(), egui::Button::new("Subscribe selected"))
+            .add_enabled(
+                !busy && !unsubscribed.is_empty(),
+                egui::Button::new("Subscribe selected"),
+            )
             .clicked()
         {
             app.send(ClientAction::Workshop(WorkshopAction::Subscribe {
@@ -933,7 +936,10 @@ fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: Wo
             app.selected_workshop_items.clear();
         }
         if ui
-            .add_enabled(!busy && !subscribed.is_empty(), egui::Button::new("Unsubscribe selected"))
+            .add_enabled(
+                !busy && !subscribed.is_empty(),
+                egui::Button::new("Unsubscribe selected"),
+            )
             .clicked()
         {
             app.send(ClientAction::Workshop(WorkshopAction::Unsubscribe {
@@ -952,96 +958,101 @@ fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: Wo
     }
     for row in visible_rows {
         vapor_gui_core::panel::Panel::new(&row.title, |ui| {
-                ui.horizontal(|ui| {
-                    let mut selected = app
-                        .selected_workshop_items
-                        .contains(&row.published_file_id);
-                    if ui.checkbox(&mut selected, "").changed() {
-                        if selected {
-                            app.selected_workshop_items
-                                .insert(row.published_file_id.clone());
-                        } else {
-                            app.selected_workshop_items
-                                .remove(&row.published_file_id);
-                        }
+            ui.horizontal(|ui| {
+                let mut selected = app.selected_workshop_items.contains(&row.published_file_id);
+                if ui.checkbox(&mut selected, "").changed() {
+                    if selected {
+                        app.selected_workshop_items
+                            .insert(row.published_file_id.clone());
+                    } else {
+                        app.selected_workshop_items.remove(&row.published_file_id);
                     }
-                    ui.vertical(|ui| {
-                        ui.weak(
-                            workshop_item_kind(&row.tags)
-                                .map(|kind| friendly_kind(kind.as_str()))
-                                .unwrap_or("Community content"),
-                        );
-                        if !row.description.is_empty() || !row.tags.is_empty() {
-                            egui::CollapsingHeader::new("Details")
-                                .id_salt(("workshop-details", &row.published_file_id))
-                                .show(ui, |ui| {
-                                    if !row.description.is_empty() {
-                                        ui.label(egui::RichText::new(&row.description).small());
-                                    }
-                                    if !row.tags.is_empty() {
-                                        ui.horizontal_wrapped(|ui| {
-                                            for tag in &row.tags {
-                                                ui.label(egui::RichText::new(tag).small().weak());
-                                            }
-                                        });
-                                    }
-                                });
-                        }
-                        ui.horizontal_wrapped(|ui| {
-                            if row.subscribed {
-                                ui.label(egui::RichText::new("Subscribed").small());
-                            }
-                            if row.local.is_some() {
-                                ui.label(egui::RichText::new("In Library").small().strong());
-                            }
-                            if row.needs_update {
-                                ui.colored_label(egui::Color32::YELLOW, "Update available");
-                            }
-                            if row.downloading {
-                                if let Some((done, total)) = row.download_progress.filter(|(_, total)| *total > 0) {
-                                    ui.add(egui::ProgressBar::new(done as f32 / total as f32).desired_width(120.0));
-                                } else {
-                                    ui.weak("Downloading…");
+                }
+                ui.vertical(|ui| {
+                    ui.weak(
+                        workshop_item_kind(&row.tags)
+                            .map(|kind| friendly_kind(kind.as_str()))
+                            .unwrap_or("Community content"),
+                    );
+                    if !row.description.is_empty() || !row.tags.is_empty() {
+                        egui::CollapsingHeader::new("Details")
+                            .id_salt(("workshop-details", &row.published_file_id))
+                            .show(ui, |ui| {
+                                if !row.description.is_empty() {
+                                    ui.label(egui::RichText::new(&row.description).small());
                                 }
-                            }
-                        });
-                    });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if let Some(entry) = row.local.as_ref()
-                            && let Some(action) = create_composition_action(entry)
-                            && ui.button("Add to Play").clicked()
-                        {
-                            app.send(action);
-                            app.page = Page::Play;
-                        }
-                        if row.subscribed && row.local.is_none() && !row.downloading && !busy
-                            && ui.button("Download").clicked()
-                        {
-                            app.send(ClientAction::Workshop(WorkshopAction::Acquire {
-                                item_ids: vec![row.published_file_id.clone()],
-                            }));
-                        }
-                        if !row.subscribed && !busy && ui.button("Subscribe").clicked() {
-                            app.send(ClientAction::Workshop(WorkshopAction::Subscribe {
-                                item_ids: vec![row.published_file_id.clone()],
-                            }));
-                        }
-                        if row.subscribed && !busy {
-                            ui.menu_button("⋯", |ui| {
-                                if ui.button("Unsubscribe").clicked() {
-                                    app.send(ClientAction::Workshop(WorkshopAction::Unsubscribe {
-                                        item_ids: vec![row.published_file_id.clone()],
-                                    }));
-                                    ui.close();
+                                if !row.tags.is_empty() {
+                                    ui.horizontal_wrapped(|ui| {
+                                        for tag in &row.tags {
+                                            ui.label(egui::RichText::new(tag).small().weak());
+                                        }
+                                    });
                                 }
-                            })
-                            .response
-                            .on_hover_text("More actions");
+                            });
+                    }
+                    ui.horizontal_wrapped(|ui| {
+                        if row.subscribed {
+                            ui.label(egui::RichText::new("Subscribed").small());
+                        }
+                        if row.local.is_some() {
+                            ui.label(egui::RichText::new("In Library").small().strong());
+                        }
+                        if row.needs_update {
+                            ui.colored_label(egui::Color32::YELLOW, "Update available");
+                        }
+                        if row.downloading {
+                            if let Some((done, total)) =
+                                row.download_progress.filter(|(_, total)| *total > 0)
+                            {
+                                ui.add(
+                                    egui::ProgressBar::new(done as f32 / total as f32)
+                                        .desired_width(120.0),
+                                );
+                            } else {
+                                ui.weak("Downloading…");
+                            }
                         }
                     });
                 });
-            })
-            .show(ui);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if let Some(entry) = row.local.as_ref()
+                        && let Some(action) = create_composition_action(entry)
+                        && ui.button("Add to Play").clicked()
+                    {
+                        app.send(action);
+                        app.page = Page::Play;
+                    }
+                    if row.subscribed
+                        && row.local.is_none()
+                        && !row.downloading
+                        && !busy
+                        && ui.button("Download").clicked()
+                    {
+                        app.send(ClientAction::Workshop(WorkshopAction::Acquire {
+                            item_ids: vec![row.published_file_id.clone()],
+                        }));
+                    }
+                    if !row.subscribed && !busy && ui.button("Subscribe").clicked() {
+                        app.send(ClientAction::Workshop(WorkshopAction::Subscribe {
+                            item_ids: vec![row.published_file_id.clone()],
+                        }));
+                    }
+                    if row.subscribed && !busy {
+                        ui.menu_button("⋯", |ui| {
+                            if ui.button("Unsubscribe").clicked() {
+                                app.send(ClientAction::Workshop(WorkshopAction::Unsubscribe {
+                                    item_ids: vec![row.published_file_id.clone()],
+                                }));
+                                ui.close();
+                            }
+                        })
+                        .response
+                        .on_hover_text("More actions");
+                    }
+                });
+            });
+        })
+        .show(ui);
     }
 }
 
@@ -1068,7 +1079,10 @@ fn workshop_subscriptions_contents(
         query.is_empty()
             || row.title.to_lowercase().contains(&query)
             || row.published_file_id.contains(&query)
-            || row.tags.iter().any(|tag| tag.to_lowercase().contains(&query))
+            || row
+                .tags
+                .iter()
+                .any(|tag| tag.to_lowercase().contains(&query))
     });
     rows.sort_by(|left, right| left.title.to_lowercase().cmp(&right.title.to_lowercase()));
 
@@ -1483,10 +1497,7 @@ impl eframe::App for LauncherApp {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        storage.set_string(
-            "workshop_page_size",
-            self.workshop_page_size.to_string(),
-        );
+        storage.set_string("workshop_page_size", self.workshop_page_size.to_string());
     }
 }
 
