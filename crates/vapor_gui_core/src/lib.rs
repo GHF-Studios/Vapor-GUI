@@ -5,6 +5,7 @@ pub enum GuiMode {
     Studio,
     Play,
     Installer,
+    Ide,
 }
 
 #[derive(Debug, Clone, Default)]

@@ -3,7 +3,10 @@ use std::path::PathBuf;
 use vapor_gui_core::{GuiLaunch, GuiMode, GuiProduct, run_product};
 
 #[derive(Debug, Parser)]
-#[command(name = "vapor-gui", about = "Vapor Launcher, Studio, and Installer")]
+#[command(
+    name = "vapor-gui",
+    about = "Vapor Launcher, Studio, IDE, and Installer"
+)]
 struct Args {
     #[arg(long, value_enum)]
     mode: Option<ModeArg>,
@@ -18,6 +21,7 @@ enum ModeArg {
     Studio,
     Play,
     Installer,
+    Ide,
 }
 
 impl From<ModeArg> for GuiMode {
@@ -26,6 +30,7 @@ impl From<ModeArg> for GuiMode {
             ModeArg::Studio => Self::Studio,
             ModeArg::Play => Self::Play,
             ModeArg::Installer => Self::Installer,
+            ModeArg::Ide => Self::Ide,
         }
     }
 }
@@ -39,6 +44,7 @@ pub fn run(default_mode: GuiMode) -> eframe::Result<()> {
     };
     match mode {
         GuiMode::Installer => run_product(InstallerProduct, launch),
+        GuiMode::Ide => run_product(IdeProduct, launch),
         GuiMode::Play => run_product(LauncherProduct, launch),
         GuiMode::Studio => run_product(StudioProduct, launch),
     }
@@ -77,6 +83,22 @@ impl GuiProduct for LauncherProduct {
 }
 
 struct InstallerProduct;
+
+struct IdeProduct;
+
+impl GuiProduct for IdeProduct {
+    fn title(&self) -> &'static str {
+        "Vapor IDE"
+    }
+
+    fn create(
+        &self,
+        context: &eframe::CreationContext<'_>,
+        launch: GuiLaunch,
+    ) -> Box<dyn eframe::App> {
+        Box::new(vapor_ide_ui::IdeApp::new(context, launch))
+    }
+}
 
 impl GuiProduct for InstallerProduct {
     fn title(&self) -> &'static str {
