@@ -261,7 +261,6 @@ impl LauncherApp {
             selected_workshop_items: HashSet::new(),
             workshop_page_size: creation
                 .storage
-                .as_deref()
                 .and_then(|storage| storage.get_string("workshop_page_size"))
                 .and_then(|value| value.parse::<usize>().ok())
                 .filter(|size| [10, 20, 50].contains(size))
@@ -897,7 +896,7 @@ fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: Wo
         .iter()
         .filter(|row| row.subscribed || visible_discovery.contains(row.published_file_id.as_str()))
         .collect();
-    visible_rows.sort_by(|left, right| left.title.to_lowercase().cmp(&right.title.to_lowercase()));
+    visible_rows.sort_by_key(|row| row.title.to_lowercase());
     let mut selectable: Vec<_> = visible_rows
         .iter()
         .map(|row| row.published_file_id.clone())
@@ -1084,7 +1083,7 @@ fn workshop_subscriptions_contents(
                 .iter()
                 .any(|tag| tag.to_lowercase().contains(&query))
     });
-    rows.sort_by(|left, right| left.title.to_lowercase().cmp(&right.title.to_lowercase()));
+    rows.sort_by_key(|row| row.title.to_lowercase());
 
     vapor_gui_core::panel::Panel::new("Your Subscriptions", |ui| {
         ui.horizontal_wrapped(|ui| {
@@ -1206,10 +1205,14 @@ fn workshop_subscriptions_contents(
                     if row.needs_update {
                         ui.colored_label(egui::Color32::YELLOW, "Update available");
                     }
-                    if row.downloading {
-                        if let Some((done, total)) = row.download_progress.filter(|(_, total)| *total > 0) {
-                            ui.add(egui::ProgressBar::new(done as f32 / total as f32).desired_width(130.0));
-                        }
+                    if row.downloading
+                        && let Some((done, total)) =
+                            row.download_progress.filter(|(_, total)| *total > 0)
+                    {
+                        ui.add(
+                            egui::ProgressBar::new(done as f32 / total as f32)
+                                .desired_width(130.0),
+                        );
                     }
                 });
                 ui.horizontal_wrapped(|ui| {
