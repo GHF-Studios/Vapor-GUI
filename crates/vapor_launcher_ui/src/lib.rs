@@ -177,6 +177,24 @@ fn workshop_item_rows(
     rows
 }
 
+fn visible_workshop_rows<'a>(
+    rows: &'a [WorkshopItemRow],
+    results: &vapor_client_protocol::WorkshopSearchSnapshot,
+    offset: usize,
+    page_size: usize,
+) -> Vec<&'a WorkshopItemRow> {
+    let visible_ids: HashSet<_> = results
+        .items
+        .iter()
+        .skip(offset)
+        .take(page_size)
+        .map(|item| item.published_file_id.as_str())
+        .collect();
+    rows.iter()
+        .filter(|row| visible_ids.contains(row.published_file_id.as_str()))
+        .collect()
+}
+
 fn workshop_item_row(
     item: &WorkshopItemSnapshot,
     subscribed: bool,
@@ -880,22 +898,16 @@ fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: Wo
         );
     }
 
-    let visible_discovery: HashSet<_> = matching_search
-        .as_ref()
-        .into_iter()
-        .flat_map(|results| {
-            results
-                .items
-                .iter()
-                .skip(app.workshop_result_offset)
-                .take(app.workshop_page_size)
+    let mut visible_rows = matching_search
+        .map(|results| {
+            visible_workshop_rows(
+                &rows,
+                results,
+                app.workshop_result_offset,
+                app.workshop_page_size,
+            )
         })
-        .map(|item| item.published_file_id.as_str())
-        .collect();
-    let mut visible_rows: Vec<_> = rows
-        .iter()
-        .filter(|row| row.subscribed || visible_discovery.contains(row.published_file_id.as_str()))
-        .collect();
+        .unwrap_or_default();
     visible_rows.sort_by_key(|row| row.title.to_lowercase());
     let mut selectable: Vec<_> = visible_rows
         .iter()
@@ -912,12 +924,12 @@ fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: Wo
             app.selected_workshop_items.clear();
         }
         let selected: Vec<_> = app.selected_workshop_items.iter().cloned().collect();
-        let subscribed: Vec<_> = rows
+        let subscribed: Vec<_> = visible_rows
             .iter()
             .filter(|row| selected.contains(&row.published_file_id) && row.subscribed)
             .map(|row| row.published_file_id.clone())
             .collect();
-        let unsubscribed: Vec<_> = rows
+        let unsubscribed: Vec<_> = visible_rows
             .iter()
             .filter(|row| selected.contains(&row.published_file_id) && !row.subscribed)
             .map(|row| row.published_file_id.clone())
@@ -1362,6 +1374,49 @@ mod lifecycle_tests {
             preview_url: None,
             updated_at_unix: 1,
         }
+    }
+
+    #[test]
+    fn discover_subpage_contains_only_rows_in_its_visible_range() {
+        let subscription = |id: &str| vapor_client_protocol::WorkshopSubscriptionSnapshot {
+            published_file_id: id.to_owned(),
+            title: format!("Item {id}"),
+            description: String::new(),
+            preview_url: None,
+            updated_at_unix: 1,
+            installed: true,
+            downloading: false,
+            download_progress: None,
+            needs_update: false,
+        };
+        let snapshot = WorkshopSnapshot {
+            subscriptions: vec![subscription("1"), subscription("2"), subscription("3")],
+            ..Default::default()
+        };
+        let search = vapor_client_protocol::WorkshopSearchSnapshot {
+            query: String::new(),
+            page: 1,
+            total_results: 3,
+            revision: 1,
+            content_kind: None,
+            required_tags: Vec::new(),
+            items: vec![
+                workshop_item("1", "One"),
+                workshop_item("2", "Two"),
+                workshop_item("3", "Three"),
+            ],
+        };
+        let rows = workshop_item_rows(&snapshot, Some(&search), &[]);
+
+        let visible = visible_workshop_rows(&rows, &search, 1, 1);
+
+        assert_eq!(
+            visible
+                .iter()
+                .map(|row| row.published_file_id.as_str())
+                .collect::<Vec<_>>(),
+            ["2"]
+        );
     }
 
     #[test]
