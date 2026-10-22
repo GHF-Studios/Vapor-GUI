@@ -130,11 +130,11 @@ fn workshop_item_rows(
                 published_file_id: item.published_file_id.clone(),
                 title: item.title.clone(),
                 description: item.description.clone(),
-                tags: Vec::new(),
                 subscribed: true,
                 downloading: item.downloading,
                 download_progress: item.download_progress,
                 needs_update: item.needs_update,
+                tags: item.tags.clone(),
                 local: local_for(&item.published_file_id),
             })
             .collect()
@@ -174,6 +174,7 @@ fn workshop_item_rows(
             }
         }
     }
+    rows.retain(workshop_row_is_player_facing);
     rows
 }
 
@@ -253,6 +254,7 @@ pub struct LauncherApp {
     workshop_kind: Option<ContentKind>,
     workshop_view: WorkshopView,
     subscriptions_query: String,
+    subscriptions_kind: Option<ContentKind>,
     subscriptions_offset: usize,
     selected_workshop_items: HashSet<String>,
     workshop_page_size: usize,
@@ -275,6 +277,7 @@ impl LauncherApp {
             workshop_kind: None,
             workshop_view: WorkshopView::Discover,
             subscriptions_query: String::new(),
+            subscriptions_kind: None,
             subscriptions_offset: 0,
             selected_workshop_items: HashSet::new(),
             workshop_page_size: creation
@@ -908,6 +911,9 @@ fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: Wo
             )
         })
         .unwrap_or_default();
+    if matching_search.is_some_and(|results| !results.items.is_empty()) && visible_rows.is_empty() {
+        ui.weak("This page has no player content. Developer crates are available in Studio.");
+    }
     visible_rows.sort_by_key(|row| row.title.to_lowercase());
     let mut selectable: Vec<_> = visible_rows
         .iter()
@@ -981,7 +987,7 @@ fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: Wo
                 }
                 ui.vertical(|ui| {
                     ui.weak(
-                        workshop_item_kind(&row.tags)
+                        workshop_item_kind_for_row(row)
                             .map(|kind| friendly_kind(kind.as_str()))
                             .unwrap_or("Community content"),
                     );
@@ -1086,14 +1092,16 @@ fn workshop_subscriptions_contents(
         .unwrap_or_else(|| (false, Vec::new(), Vec::new()));
     let mut rows = workshop_item_rows(&snapshot, None, &catalog);
     let query = app.subscriptions_query.trim().to_lowercase();
+    let kind = app.subscriptions_kind;
     rows.retain(|row| {
-        query.is_empty()
-            || row.title.to_lowercase().contains(&query)
-            || row.published_file_id.contains(&query)
-            || row
-                .tags
-                .iter()
-                .any(|tag| tag.to_lowercase().contains(&query))
+        workshop_row_matches_kind(row, kind)
+            && (query.is_empty()
+                || row.title.to_lowercase().contains(&query)
+                || row.published_file_id.contains(&query)
+                || row
+                    .tags
+                    .iter()
+                    .any(|tag| tag.to_lowercase().contains(&query)))
     });
     rows.sort_by_key(|row| row.title.to_lowercase());
 
@@ -1108,6 +1116,37 @@ fn workshop_subscriptions_contents(
                 app.subscriptions_offset = 0;
                 app.selected_workshop_items.clear();
             }
+            egui::ComboBox::from_label("Content type")
+                .selected_text(
+                    app.subscriptions_kind
+                        .map(|kind| friendly_kind(kind.as_str()))
+                        .unwrap_or("All types"),
+                )
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_value(&mut app.subscriptions_kind, None, "All types")
+                        .changed()
+                    {
+                        app.subscriptions_offset = 0;
+                        app.selected_workshop_items.clear();
+                    }
+                    for kind in ContentKind::ALL
+                        .into_iter()
+                        .filter(|kind| *kind != ContentKind::Crate)
+                    {
+                        if ui
+                            .selectable_value(
+                                &mut app.subscriptions_kind,
+                                Some(kind),
+                                friendly_kind(kind.as_str()),
+                            )
+                            .changed()
+                        {
+                            app.subscriptions_offset = 0;
+                            app.selected_workshop_items.clear();
+                        }
+                    }
+                });
             egui::ComboBox::from_label("Rows shown")
                 .selected_text(app.workshop_page_size.to_string())
                 .show_ui(ui, |ui| {
@@ -1204,7 +1243,7 @@ fn workshop_subscriptions_contents(
         for row in visible {
             vapor_gui_core::panel::Panel::new(&row.title, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    ui.weak(workshop_item_kind(&row.tags)
+                    ui.weak(workshop_item_kind_for_row(row)
                         .map(|kind| friendly_kind(kind.as_str()))
                         .unwrap_or("Community content"));
                     if row.local.is_some() {
@@ -1353,6 +1392,21 @@ fn workshop_item_kind(tags: &[String]) -> Option<ContentKind> {
     tags.iter().find_map(|tag| tag.parse::<ContentKind>().ok())
 }
 
+fn workshop_item_kind_for_row(row: &WorkshopItemRow) -> Option<ContentKind> {
+    row.local
+        .as_ref()
+        .and_then(|entry| entry.kind.parse::<ContentKind>().ok())
+        .or_else(|| workshop_item_kind(&row.tags))
+}
+
+fn workshop_row_is_player_facing(row: &WorkshopItemRow) -> bool {
+    workshop_item_kind_for_row(row) != Some(ContentKind::Crate)
+}
+
+fn workshop_row_matches_kind(row: &WorkshopItemRow, kind: Option<ContentKind>) -> bool {
+    kind.is_none_or(|kind| workshop_item_kind_for_row(row) == Some(kind))
+}
+
 fn workshop_search_matches_controls(
     search: &vapor_client_protocol::WorkshopSearchSnapshot,
     query: &str,
@@ -1377,6 +1431,108 @@ mod lifecycle_tests {
     }
 
     #[test]
+    fn subscribed_workshop_rows_keep_their_canonical_type() {
+        let snapshot = WorkshopSnapshot {
+            subscriptions: vec![vapor_client_protocol::WorkshopSubscriptionSnapshot {
+                published_file_id: "123".to_owned(),
+                title: "Playable pack".to_owned(),
+                description: String::new(),
+                preview_url: None,
+                updated_at_unix: 1,
+                tags: vec!["packagepack".to_owned()],
+                installed: false,
+                needs_update: false,
+                downloading: false,
+                download_progress: None,
+            }],
+            ..Default::default()
+        };
+
+        let rows = workshop_item_rows(&snapshot, None, &[]);
+
+        assert_eq!(
+            workshop_item_kind(&rows[0].tags),
+            Some(ContentKind::Packagepack)
+        );
+    }
+
+    #[test]
+    fn subscription_type_filter_uses_canonical_tags_and_local_fallback() {
+        let mut tagged = workshop_item("123", "Playable pack");
+        tagged.tags = vec!["packagepack".to_owned(), "adventure".to_owned()];
+        let rows = workshop_item_rows(
+            &WorkshopSnapshot::default(),
+            Some(&vapor_client_protocol::WorkshopSearchSnapshot {
+                query: String::new(),
+                page: 1,
+                total_results: 1,
+                revision: 1,
+                content_kind: None,
+                required_tags: Vec::new(),
+                items: vec![tagged],
+            }),
+            &[],
+        );
+
+        assert!(workshop_row_matches_kind(
+            &rows[0],
+            Some(ContentKind::Packagepack)
+        ));
+        assert!(!workshop_row_matches_kind(
+            &rows[0],
+            Some(ContentKind::Game)
+        ));
+        assert!(workshop_row_matches_kind(&rows[0], None));
+    }
+
+    #[test]
+    fn verified_local_kind_wins_over_workshop_discovery_tags() {
+        let mut row = workshop_item_row(&workshop_item("123", "Playable pack"), true, None);
+        row.tags = vec!["game".to_owned()];
+        row.local = Some(CatalogEntry {
+            id: "ghf-studios/game/pack".to_owned(),
+            name: Some("Playable pack".to_owned()),
+            version: Some("0.5.0".to_owned()),
+            kind: "packagepack".to_owned(),
+            published_file_id: Some("123".to_owned()),
+            dependencies: Vec::new(),
+            conflicts: Vec::new(),
+            locations: Vec::new(),
+            role: CatalogItemRole::PlayableComposition,
+            actions: Vec::new(),
+        });
+
+        assert_eq!(
+            workshop_item_kind_for_row(&row),
+            Some(ContentKind::Packagepack)
+        );
+    }
+
+    #[test]
+    fn player_workshop_rows_hide_rust_crates() {
+        let mut crate_item = workshop_item("crate", "Developer library");
+        crate_item.tags = vec!["crate".to_owned()];
+        let search = vapor_client_protocol::WorkshopSearchSnapshot {
+            query: String::new(),
+            page: 1,
+            total_results: 2,
+            revision: 1,
+            content_kind: None,
+            required_tags: Vec::new(),
+            items: vec![workshop_item("game", "Game"), crate_item],
+        };
+
+        let rows = workshop_item_rows(&WorkshopSnapshot::default(), Some(&search), &[]);
+
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.published_file_id.as_str())
+                .collect::<Vec<_>>(),
+            ["game"]
+        );
+    }
+
+    #[test]
     fn discover_subpage_contains_only_rows_in_its_visible_range() {
         let subscription = |id: &str| vapor_client_protocol::WorkshopSubscriptionSnapshot {
             published_file_id: id.to_owned(),
@@ -1384,6 +1540,7 @@ mod lifecycle_tests {
             description: String::new(),
             preview_url: None,
             updated_at_unix: 1,
+            tags: Vec::new(),
             installed: true,
             downloading: false,
             download_progress: None,
@@ -1428,6 +1585,7 @@ mod lifecycle_tests {
                 description: String::new(),
                 preview_url: None,
                 updated_at_unix: 1,
+                tags: Vec::new(),
                 installed: true,
                 downloading: false,
                 download_progress: None,
