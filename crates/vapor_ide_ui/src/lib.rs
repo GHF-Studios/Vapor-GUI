@@ -114,6 +114,7 @@ pub struct IdeApp {
     status: String,
     console: vapor_gui_core::console::ConsolePanelState,
     bottom_open: bool,
+    bottom_console_active: bool,
     inspector_open: bool,
     new_file_dialog: bool,
     new_file_path: String,
@@ -165,6 +166,7 @@ impl IdeApp {
             status: "Connecting to Vapor...".to_owned(),
             console: vapor_gui_core::console::ConsolePanelState::default(),
             bottom_open: true,
+            bottom_console_active: false,
             inspector_open: true,
             new_file_dialog: false,
             new_file_path: String::new(),
@@ -1198,7 +1200,7 @@ impl IdeApp {
                 }
                 ui.menu_button("View", |ui| {
                     ui.checkbox(&mut self.inspector_open, "Inspector");
-                    ui.checkbox(&mut self.bottom_open, "Problems & Console");
+                    ui.checkbox(&mut self.bottom_open, "Bottom panel");
                 });
                 ui.menu_button("Actions", |ui| {
                     if ui
@@ -1810,58 +1812,73 @@ impl IdeApp {
     }
 
     fn draw_bottom(&mut self, ui: &mut egui::Ui) {
+        let diagnostic_count = self.diagnostics.values().map(Vec::len).sum::<usize>();
         ui.horizontal(|ui| {
-            let diagnostic_count = self.diagnostics.values().map(Vec::len).sum::<usize>();
-            ui.strong(format!("Problems | {diagnostic_count}"));
+            if ui
+                .selectable_label(
+                    !self.bottom_console_active,
+                    format!("Problems ({diagnostic_count})"),
+                )
+                .clicked()
+            {
+                self.bottom_console_active = false;
+            }
+            if ui
+                .selectable_label(self.bottom_console_active, "Console")
+                .clicked()
+            {
+                self.bottom_console_active = true;
+            }
+            ui.separator();
             ui.weak(&self.language_server_status);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("Clear").clicked() {
-                    self.console.history.clear();
-                }
-            });
         });
         ui.separator();
-        let mut selected_diagnostic = None;
-        egui::ScrollArea::vertical()
-            .id_salt("ide-diagnostics")
-            .max_height(150.0)
-            .show(ui, |ui| {
-                for (path, diagnostics) in &self.diagnostics {
-                    for diagnostic in diagnostics {
-                        let marker = match diagnostic.severity {
-                            Some(1) => "Error",
-                            Some(2) => "Warning",
-                            Some(3) => "Info",
-                            Some(4) => "Hint",
-                            _ => "Diagnostic",
-                        };
-                        if ui
-                            .selectable_label(
-                                false,
-                                format!(
-                                    "{marker}  {}:{}:{}  {}",
-                                    path.display(),
-                                    diagnostic.line,
-                                    diagnostic.character,
-                                    diagnostic.message
-                                ),
-                            )
-                            .clicked()
-                        {
-                            selected_diagnostic = Some(path.clone());
+        if self.bottom_console_active {
+            if self.console.history.is_empty() {
+                ui.weak("Managed commands and toolchain output appear here.");
+            }
+            if let Some(command) = self.console.show(ui, true) {
+                self.submit_console_command(&command);
+            }
+        } else {
+            let mut selected_diagnostic = None;
+            egui::ScrollArea::vertical()
+                .id_salt("ide-diagnostics")
+                .max_height(150.0)
+                .show(ui, |ui| {
+                    for (path, diagnostics) in &self.diagnostics {
+                        for diagnostic in diagnostics {
+                            let marker = match diagnostic.severity {
+                                Some(1) => "Error",
+                                Some(2) => "Warning",
+                                Some(3) => "Info",
+                                Some(4) => "Hint",
+                                _ => "Diagnostic",
+                            };
+                            if ui
+                                .selectable_label(
+                                    false,
+                                    format!(
+                                        "{marker}  {}:{}:{}  {}",
+                                        path.display(),
+                                        diagnostic.line,
+                                        diagnostic.character,
+                                        diagnostic.message
+                                    ),
+                                )
+                                .clicked()
+                            {
+                                selected_diagnostic = Some(path.clone());
+                            }
                         }
                     }
-                }
-            });
-        if let Some(path) = selected_diagnostic {
-            self.open_file(path);
-        }
-        ui.separator();
-        if self.console.history.is_empty() {
-            ui.weak("Managed commands and toolchain output appear here.");
-        }
-        if let Some(command) = self.console.show(ui, true) {
-            self.submit_console_command(&command);
+                });
+            if let Some(path) = selected_diagnostic {
+                self.open_file(path);
+            }
+            if diagnostic_count == 0 {
+                ui.weak("Rust Analyzer and build diagnostics appear here.");
+            }
         }
     }
 
@@ -1935,6 +1952,9 @@ impl eframe::App for IdeApp {
         self.poll_connection();
         self.poll_service();
         if ui.input(|input| input.key_pressed(egui::Key::F2)) {
+            if !self.bottom_open {
+                self.bottom_console_active = true;
+            }
             self.bottom_open = !self.bottom_open;
         }
         if ui.input(|input| input.modifiers.command && input.key_pressed(egui::Key::S)) {
