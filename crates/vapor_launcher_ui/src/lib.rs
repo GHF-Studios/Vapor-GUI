@@ -1026,7 +1026,7 @@ fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: Wo
                                         .desired_width(120.0),
                                 );
                             } else {
-                                ui.weak("Downloading…");
+                                ui.weak("Preparing…");
                             }
                         }
                     });
@@ -1043,7 +1043,7 @@ fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: Wo
                         && row.local.is_none()
                         && !row.downloading
                         && !busy
-                        && ui.button("Download").clicked()
+                        && ui.button("Add to Library").clicked()
                     {
                         app.send(ClientAction::Workshop(WorkshopAction::Acquire {
                             item_ids: vec![row.published_file_id.clone()],
@@ -1247,11 +1247,11 @@ fn workshop_subscriptions_contents(
                         .map(|kind| friendly_kind(kind.as_str()))
                         .unwrap_or("Community content"));
                     if row.local.is_some() {
-                        ui.label(egui::RichText::new("In Library here").strong());
+                        ui.label(egui::RichText::new("In Library").strong());
                     } else if row.downloading {
-                        ui.label("Downloading to this device");
+                        ui.label("Preparing for Library…");
                     } else {
-                        ui.weak("Not downloaded here");
+                        ui.weak("Not in Library");
                     }
                     if row.needs_update {
                         ui.colored_label(egui::Color32::YELLOW, "Update available");
@@ -1276,7 +1276,7 @@ fn workshop_subscriptions_contents(
                         }
                     }
                     if !row.downloading && row.local.is_none() && !busy
-                        && ui.button("Download here").clicked()
+                        && ui.button("Add to Library").clicked()
                     {
                         app.send(ClientAction::Workshop(WorkshopAction::Acquire {
                             item_ids: vec![row.published_file_id.clone()],
@@ -1318,7 +1318,7 @@ fn workshop_subscriptions_contents(
             .show(ui);
         }
     })
-    .description("Manage your Steam account subscriptions and this device's local availability")
+    .description("Manage subscriptions and the content available in your Library")
     .show(ui);
 }
 
