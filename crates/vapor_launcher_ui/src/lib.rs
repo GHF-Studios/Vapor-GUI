@@ -560,7 +560,7 @@ impl LauncherApp {
             .available_actions
             .iter()
             .find(|available| available.id == id)
-            .map(|available| available.enabled)
+            .map(|available| available.enabled || available.queueable)
     }
 
     fn receive_operation_output(&mut self, output: OperationOutputEvent) {
