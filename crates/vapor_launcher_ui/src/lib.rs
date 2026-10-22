@@ -547,11 +547,16 @@ impl LauncherApp {
         }
     }
 
-    fn service_action_enabled(&self, action: &ClientAction) -> Option<bool> {
+    fn service_action_enabled(&self, action: &ClientAction, composition_id: &str) -> Option<bool> {
         let id = action.id();
-        self.service
-            .as_ref()?
-            .latest_snapshot()
+        let snapshot = self.service.as_ref()?.latest_snapshot();
+        if snapshot.active_composition_id.as_deref() != Some(composition_id) {
+            // The service currently projects readiness for the selected
+            // composition. Do not apply that answer to a different row; its
+            // request will be validated against its own canonical state.
+            return Some(true);
+        }
+        snapshot
             .available_actions
             .iter()
             .find(|available| available.id == id)
@@ -644,7 +649,9 @@ impl LauncherApp {
                 let action_enabled = self.service.is_some()
                     && action
                         .as_ref()
-                        .and_then(|action| self.service_action_enabled(action))
+                        .and_then(|action| {
+                            self.service_action_enabled(action, composition.id.as_str())
+                        })
                         .unwrap_or(true);
                 vapor_gui_core::panel::Panel::new(&composition.name, |ui| {
                     ui.horizontal_wrapped(|ui| {
