@@ -613,7 +613,7 @@ impl LauncherApp {
                                     entry.published_file_id.as_deref() == Some(item.published_file_id.as_str())
                                         && item.steam_needs_update
                                 }) {
-                                    ui.colored_label(egui::Color32::YELLOW, "Update available");
+                                    ui.colored_label(egui::Color32::YELLOW, "Workshop update available");
                                 }
                             });
                         });
@@ -1015,7 +1015,7 @@ fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: Wo
                             ui.label(egui::RichText::new("In Library").small().strong());
                         }
                         if row.steam_needs_update {
-                            ui.colored_label(egui::Color32::YELLOW, "Update available");
+                            ui.colored_label(egui::Color32::YELLOW, "Workshop update available");
                         }
                         if row.steam_downloading {
                             if let Some((done, total)) =
@@ -1026,7 +1026,7 @@ fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: Wo
                                         .desired_width(120.0),
                                 );
                             } else {
-                                ui.weak("Preparing…");
+                                ui.weak("Downloading from Workshop…");
                             }
                         }
                     });
@@ -1249,12 +1249,12 @@ fn workshop_subscriptions_contents(
                     if row.local.is_some() {
                         ui.label(egui::RichText::new("In Library").strong());
                     } else if row.steam_downloading {
-                        ui.label("Preparing for Library…");
+                        ui.label("Downloading from Workshop…");
                     } else {
                         ui.weak("Not in Library");
                     }
                     if row.steam_needs_update {
-                        ui.colored_label(egui::Color32::YELLOW, "Update available");
+                        ui.colored_label(egui::Color32::YELLOW, "Workshop update available");
                     }
                     if row.steam_downloading
                         && let Some((done, total)) =
@@ -1577,7 +1577,7 @@ mod lifecycle_tests {
     }
 
     #[test]
-    fn workshop_rows_merge_subscription_and_discovery_by_published_identity() {
+    fn workshop_rows_merge_identity_and_keep_steam_transfer_separate_from_library() {
         let snapshot = WorkshopSnapshot {
             subscriptions: vec![vapor_client_protocol::WorkshopSubscriptionSnapshot {
                 published_file_id: "123".to_owned(),
@@ -1586,9 +1586,9 @@ mod lifecycle_tests {
                 preview_url: None,
                 updated_at_unix: 1,
                 tags: Vec::new(),
-                steam_installed: true,
-                steam_downloading: false,
-                steam_download_progress: None,
+                steam_installed: false,
+                steam_downloading: true,
+                steam_download_progress: Some((32, 100)),
                 steam_needs_update: false,
             }],
             ..Default::default()
@@ -1609,6 +1609,12 @@ mod lifecycle_tests {
         assert!(rows[0].subscribed);
         assert_eq!(rows[0].title, "Current title");
         assert_eq!(rows[0].published_file_id, "123");
+        assert!(rows[0].steam_downloading);
+        assert_eq!(rows[0].steam_download_progress, Some((32, 100)));
+        assert!(
+            rows[0].local.is_none(),
+            "Steam transfer is not Library presence"
+        );
     }
 
     #[test]
