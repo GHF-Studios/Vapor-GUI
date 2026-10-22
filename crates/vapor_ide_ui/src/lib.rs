@@ -1,6 +1,6 @@
 use eframe::egui;
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, HashSet, VecDeque},
     ops::Range,
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, TryRecvError},
@@ -12,6 +12,7 @@ use vapor_client_protocol::{
     ClientAction, ClientEvent, LanguageServerAction, OperationStatus, ProtocolFrame,
     WorkspaceAction, WorkspaceFileResult, WorkspaceProjectSelection, WorkspaceToolOperation,
 };
+use vapor_gui_core::{ConsoleLevel, ConsoleRecord};
 use vapor_gui_core::workspace_tree::{WorkspaceFileTree, WorkspaceTreeEntry};
 
 #[derive(Clone)]
@@ -109,8 +110,9 @@ pub struct IdeApp {
     project_query: String,
     save_queue: VecDeque<PathBuf>,
     pending: Option<PendingRequest>,
+    console_requests: HashSet<String>,
     status: String,
-    build_output: Vec<String>,
+    console: vapor_gui_core::console::ConsolePanelState,
     bottom_open: bool,
     inspector_open: bool,
     new_file_dialog: bool,
@@ -159,8 +161,9 @@ impl IdeApp {
             project_query: String::new(),
             save_queue: VecDeque::new(),
             pending: None,
+            console_requests: HashSet::new(),
             status: "Connecting to Vapor...".to_owned(),
-            build_output: Vec::new(),
+            console: vapor_gui_core::console::ConsolePanelState::default(),
             bottom_open: true,
             inspector_open: true,
             new_file_dialog: false,
@@ -812,7 +815,7 @@ impl IdeApp {
                 "Save or discard your edits before running a workspace action.".to_owned();
             return;
         }
-        self.build_output.clear();
+        self.console.history.clear();
         self.send(
             ClientAction::Workspace(WorkspaceAction::RunTool {
                 operation,
@@ -832,7 +835,7 @@ impl IdeApp {
             self.status = "Save or discard your edits before running the project.".to_owned();
             return;
         }
-        self.build_output.clear();
+        self.console.history.clear();
         self.send(
             ClientAction::Workspace(WorkspaceAction::RunConfiguration {
                 workspace_root: root.display().to_string(),
@@ -877,6 +880,20 @@ impl IdeApp {
             };
             match frame {
                 ProtocolFrame::Response(response) => {
+                    if self.console_requests.remove(&response.request_id.0) {
+                        if let Some(error) = response.error {
+                            self.console.history.push(ConsoleRecord::new(
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
+                                    .unwrap_or_default(),
+                                ConsoleLevel::Error,
+                                "vapor",
+                                error.message,
+                            ));
+                        }
+                        continue;
+                    }
                     if let Some(language_server_request) =
                         self.language_server_requests.remove(&response.request_id.0)
                     {
@@ -929,7 +946,22 @@ impl IdeApp {
                     }
                 }
                 ProtocolFrame::Event(ClientEvent::OperationOutput(output)) => {
-                    self.append_output(&output.text);
+                    for line in output.text.lines().filter(|line| !line.trim().is_empty()) {
+                        let source = if output.source.is_empty() { "command" } else { &output.source };
+                        let mut record = ConsoleRecord::new(
+                            output.timestamp_unix_ms,
+                            output.level,
+                            source,
+                            line,
+                        )
+                        .target(output.action.clone())
+                        .field("operation", output.id.clone())
+                        .field("stream", format!("{:?}", output.stream).to_ascii_lowercase());
+                        if let Some(process) = &output.process {
+                            record = record.field("process", process.clone());
+                        }
+                        self.console.history.push(record);
+                    }
                 }
                 ProtocolFrame::Event(ClientEvent::OperationChanged(event)) => {
                     if let Some(pending) = self.pending.as_mut()
@@ -992,11 +1024,20 @@ impl IdeApp {
     }
 
     fn append_output(&mut self, output: &str) {
-        self.build_output.extend(output.lines().map(str::to_owned));
-        const MAX_LINES: usize = 500;
-        if self.build_output.len() > MAX_LINES {
-            let remove = self.build_output.len() - MAX_LINES;
-            self.build_output.drain(..remove);
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
+            .unwrap_or_default();
+        for line in vapor_gui_core::plain_terminal_text(output)
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+        {
+            self.console.history.push(ConsoleRecord::new(
+                timestamp,
+                ConsoleLevel::Info,
+                "ide",
+                line,
+            ));
         }
     }
 
@@ -1148,7 +1189,7 @@ impl IdeApp {
                 }
                 ui.menu_button("View", |ui| {
                     ui.checkbox(&mut self.inspector_open, "Inspector");
-                    ui.checkbox(&mut self.bottom_open, "Build & Problems");
+                    ui.checkbox(&mut self.bottom_open, "Problems & Console");
                 });
                 ui.menu_button("Actions", |ui| {
                     if ui
@@ -1766,7 +1807,7 @@ impl IdeApp {
             ui.weak(&self.language_server_status);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("Clear").clicked() {
-                    self.build_output.clear();
+                    self.console.history.clear();
                 }
             });
         });
@@ -1807,16 +1848,62 @@ impl IdeApp {
             self.open_file(path);
         }
         ui.separator();
-        egui::ScrollArea::vertical()
-            .stick_to_bottom(true)
-            .show(ui, |ui| {
-                if self.build_output.is_empty() {
-                    ui.label("Managed Run, Check, Test, Build, and Format output appears here.");
+        if self.console.history.is_empty() {
+            ui.weak("Managed commands and toolchain output appear here.");
+        }
+        if let Some(command) = self.console.show(ui, true) {
+            self.submit_console_command(&command);
+        }
+    }
+
+    fn submit_console_command(&mut self, line: &str) {
+        use vapor_client_domain::{
+            ConsoleCommand, ConsoleCommandOutcome, ConsoleCommandScope,
+            console_command_catalog,
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
+            .unwrap_or_default();
+        self.console.history.push(ConsoleRecord::new(now, ConsoleLevel::Input, "console", line));
+        match ConsoleCommand::parse(line) {
+            Ok(ConsoleCommand::Help) => {
+                for command in console_command_catalog(ConsoleCommandScope::Workspace) {
+                    self.console.history.push(
+                        ConsoleRecord::new(now, ConsoleLevel::Info, "help", command.path)
+                            .field("description", command.summary),
+                    );
                 }
-                for line in &self.build_output {
-                    ui.monospace(line);
+            }
+            Ok(ConsoleCommand::Status) => self.console.history.push(
+                ConsoleRecord::new(now, ConsoleLevel::Info, "ide", self.status.clone()),
+            ),
+            Ok(command) => match command.outcome() {
+                ConsoleCommandOutcome::Action(action) => {
+                    if let Some(service) = self.service.as_mut() {
+                        match service.send(action, None) {
+                            Ok(request_id) => {
+                                self.console_requests.insert(request_id.0);
+                            }
+                            Err(error) => self.console.history.push(ConsoleRecord::new(
+                                now,
+                                ConsoleLevel::Error,
+                                "vapor",
+                                error.to_string(),
+                            )),
+                        }
+                    } else {
+                        self.console.history.push(ConsoleRecord::new(
+                            now, ConsoleLevel::Error, "vapor", "Vapor service is disconnected",
+                        ));
+                    }
                 }
-            });
+                ConsoleCommandOutcome::Help | ConsoleCommandOutcome::Status => unreachable!(),
+            },
+            Err(error) => self.console.history.push(ConsoleRecord::new(
+                now, ConsoleLevel::Error, "console", format!("{error:?}"),
+            )),
+        }
     }
 }
 
@@ -1825,6 +1912,9 @@ impl eframe::App for IdeApp {
         self.connect();
         self.poll_connection();
         self.poll_service();
+        if ui.input(|input| input.key_pressed(egui::Key::F2)) {
+            self.bottom_open = !self.bottom_open;
+        }
         if ui.input(|input| input.modifiers.command && input.key_pressed(egui::Key::S)) {
             if ui.input(|input| input.modifiers.shift) {
                 self.save_all();

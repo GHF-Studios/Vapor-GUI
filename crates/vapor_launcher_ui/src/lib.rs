@@ -3,16 +3,16 @@ use std::{
     collections::HashSet,
     sync::mpsc::{self, Receiver, TryRecvError},
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 use vapor_client::{Client, ClientHostConfig, service_sibling_path};
 use vapor_client_protocol::{
     CatalogAction, CatalogEntry, CatalogItemAction, CatalogItemRole, CatalogLocationKind,
     ClientAction, ClientEvent, Composition, CompositionAction, ContentKind, InstallationState,
-    LibraryAction, OperationEvent, OperationOutputEvent, OperationOutputStream, OperationPhase,
+    LibraryAction, OperationEvent, OperationOutputEvent, OperationPhase,
     OperationStatus, ProtocolFrame, WorkshopAction, WorkshopItemSnapshot, WorkshopSnapshot,
 };
-use vapor_gui_core::{ConsoleFilter, ConsoleHistory, ConsoleLevel, ConsoleRecord};
+use vapor_gui_core::{ConsoleLevel, ConsoleRecord};
 
 const WORKSHOP_RESULTS_PER_PAGE: u32 = 50;
 
@@ -254,7 +254,7 @@ fn operation_brief(event: &OperationEvent) -> String {
         }
         OperationStatus::Succeeded => event.message.clone().unwrap_or_else(|| "Done".to_owned()),
         OperationStatus::Failed { .. } => {
-            "That operation failed. Open Command details for the error.".to_owned()
+            "That operation failed. Open the console for details.".to_owned()
         }
         OperationStatus::Cancelled => "Operation cancelled.".to_owned(),
     }
@@ -289,19 +289,6 @@ fn phase_label(phase: OperationPhase) -> &'static str {
         OperationPhase::Staging => "Preparing files",
         OperationPhase::Publishing => "Publishing",
         OperationPhase::Finalizing | OperationPhase::Complete => "Finishing",
-    }
-}
-
-fn operation_output_level(stream: OperationOutputStream, text: &str) -> ConsoleLevel {
-    let lower = text.trim().to_ascii_lowercase();
-    if lower.contains("error") || lower.contains("failed") || lower.contains("fatal") {
-        ConsoleLevel::Error
-    } else if lower.contains("warning") || stream == OperationOutputStream::Stderr {
-        ConsoleLevel::Warn
-    } else if lower.contains("finished") || lower.contains("success") {
-        ConsoleLevel::Success
-    } else {
-        ConsoleLevel::Info
     }
 }
 
@@ -375,9 +362,8 @@ pub struct LauncherApp {
     workshop_result_offset: usize,
     status: String,
     latest_operation: Option<OperationEvent>,
-    operation_log: ConsoleHistory,
-    operation_log_filter: ConsoleFilter,
-    operation_log_expanded: bool,
+    console: vapor_gui_core::console::ConsolePanelState,
+    console_open: bool,
 }
 
 impl LauncherApp {
@@ -407,9 +393,8 @@ impl LauncherApp {
             workshop_result_offset: 0,
             status: "Connecting to Vapor...".to_owned(),
             latest_operation: None,
-            operation_log: ConsoleHistory::new(2_000),
-            operation_log_filter: ConsoleFilter::default(),
-            operation_log_expanded: false,
+            console: vapor_gui_core::console::ConsolePanelState::default(),
+            console_open: false,
         }
     }
 
@@ -494,7 +479,7 @@ impl LauncherApp {
             match frame {
                 ProtocolFrame::Event(ClientEvent::OperationChanged(event)) => {
                     if let OperationStatus::Failed { message } = &event.status {
-                        self.push_operation_log(
+                        self.push_console_record(
                             ConsoleLevel::Error,
                             "vapor",
                             message,
@@ -503,7 +488,7 @@ impl LauncherApp {
                     } else if matches!(event.status, OperationStatus::Succeeded)
                         && let Some(message) = event.message.as_deref()
                     {
-                        self.push_operation_log(
+                        self.push_console_record(
                             ConsoleLevel::Success,
                             "vapor",
                             message,
@@ -518,8 +503,8 @@ impl LauncherApp {
                 }
                 ProtocolFrame::Response(response) => {
                     if let Some(error) = response.error {
-                        self.push_operation_log(ConsoleLevel::Error, "vapor", &error.message, None);
-                        self.status = "That request could not be completed. Open Command details for the error.".to_owned();
+                        self.push_console_record(ConsoleLevel::Error, "vapor", &error.message, None);
+                        self.status = "That request could not be completed. Open the console for details.".to_owned();
                     }
                 }
                 _ => {}
@@ -564,29 +549,41 @@ impl LauncherApp {
     }
 
     fn receive_operation_output(&mut self, output: OperationOutputEvent) {
-        let level = operation_output_level(output.stream, &output.text);
-        let text = vapor_gui_core::plain_terminal_text(&output.text);
-        for line in text.lines().filter(|line| !line.trim().is_empty()) {
-            self.push_operation_log(level, "command", line, Some(output.id.as_str()));
+        for line in output.text.lines().filter(|line| !line.trim().is_empty()) {
+            let mut record = ConsoleRecord::new(
+                output.timestamp_unix_ms,
+                output.level,
+                if output.source.is_empty() { "command" } else { &output.source },
+                line,
+            );
+            if !output.action.is_empty() {
+                record = record.target(output.action.clone());
+            }
+            record = record.field("operation", output.id.clone())
+                .field("stream", format!("{:?}", output.stream).to_ascii_lowercase());
+            if let Some(process) = &output.process {
+                record = record.field("process", process.clone());
+            }
+            self.console.history.push(record);
         }
     }
 
-    fn push_operation_log(
+    fn push_console_record(
         &mut self,
         level: ConsoleLevel,
         source: &str,
         message: &str,
         operation_id: Option<&str>,
     ) {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
             .unwrap_or_default();
         let mut record = ConsoleRecord::new(timestamp, level, source, message);
         if let Some(operation_id) = operation_id {
             record = record.field("operation", operation_id);
         }
-        self.operation_log.push(record);
+        self.console.history.push(record);
     }
 
     fn search_workshop(&mut self, page: u32) {
@@ -1876,6 +1873,7 @@ impl eframe::App for LauncherApp {
         }
         self.poll_connection();
         self.poll_service();
+        self.show_console_viewport(ui.ctx());
         ui.spacing_mut().item_spacing = egui::vec2(8.0, 6.0);
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
@@ -1891,6 +1889,9 @@ impl eframe::App for LauncherApp {
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Console").clicked() {
+                        self.console_open = true;
+                    }
                     if ui.button("Refresh").clicked() {
                         self.send(ClientAction::Catalog(CatalogAction::Refresh));
                         self.send(ClientAction::Workshop(WorkshopAction::LoadSubscriptions));
@@ -1944,7 +1945,7 @@ impl eframe::App for LauncherApp {
                     match &event.status {
                         OperationStatus::Failed { .. } => {
                             ui.weak(
-                                "The full error and command output are in Command details below.",
+                            "The full error and command output are in the console.",
                             );
                         }
                         OperationStatus::Running => {
@@ -1956,14 +1957,6 @@ impl eframe::App for LauncherApp {
                     }
                 })
                 .show(ui);
-            }
-            if !self.operation_log.is_empty() {
-                vapor_gui_core::console::show_operation_log(
-                    ui,
-                    &mut self.operation_log,
-                    &mut self.operation_log_filter,
-                    &mut self.operation_log_expanded,
-                );
             }
             ui.separator();
             ui.horizontal_wrapped(|ui| {
@@ -1985,6 +1978,36 @@ impl eframe::App for LauncherApp {
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         storage.set_string("workshop_page_size", self.workshop_page_size.to_string());
+    }
+}
+
+impl LauncherApp {
+    fn show_console_viewport(&mut self, context: &egui::Context) {
+        if !self.console_open {
+            return;
+        }
+        let viewport_id = egui::ViewportId::from_hash_of("vapor-launcher-console");
+        let close = context.show_viewport_immediate(
+            viewport_id,
+            egui::ViewportBuilder::default()
+                .with_title("Vapor Launcher — Console")
+                .with_inner_size([900.0, 560.0])
+                .with_min_inner_size([480.0, 280.0])
+                .with_resizable(true),
+            |context, _| {
+                let close_requested = context.input(|input| input.viewport().close_requested());
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::new().fill(egui::Color32::BLACK))
+                    .show(context, |ui| {
+                        ui.heading("Vapor Console");
+                        let _ = self.console.show(ui, false);
+                    });
+                close_requested || !self.console_open
+            },
+        );
+        if close {
+            self.console_open = false;
+        }
     }
 }
 
