@@ -105,9 +105,9 @@ struct WorkshopItemRow {
     description: String,
     tags: Vec<String>,
     subscribed: bool,
-    downloading: bool,
-    download_progress: Option<(u64, u64)>,
-    needs_update: bool,
+    steam_downloading: bool,
+    steam_download_progress: Option<(u64, u64)>,
+    steam_needs_update: bool,
     local: Option<CatalogEntry>,
 }
 
@@ -131,9 +131,9 @@ fn workshop_item_rows(
                 title: item.title.clone(),
                 description: item.description.clone(),
                 subscribed: true,
-                downloading: item.downloading,
-                download_progress: item.download_progress,
-                needs_update: item.needs_update,
+                steam_downloading: item.steam_downloading,
+                steam_download_progress: item.steam_download_progress,
+                steam_needs_update: item.steam_needs_update,
                 tags: item.tags.clone(),
                 local: local_for(&item.published_file_id),
             })
@@ -166,9 +166,9 @@ fn workshop_item_rows(
                     local_for(&item.published_file_id),
                 );
                 if let Some(subscription) = subscription {
-                    row.downloading = subscription.downloading;
-                    row.download_progress = subscription.download_progress;
-                    row.needs_update = subscription.needs_update;
+                    row.steam_downloading = subscription.steam_downloading;
+                    row.steam_download_progress = subscription.steam_download_progress;
+                    row.steam_needs_update = subscription.steam_needs_update;
                 }
                 rows.push(row);
             }
@@ -207,9 +207,9 @@ fn workshop_item_row(
         description: item.description.clone(),
         tags: item.tags.clone(),
         subscribed,
-        downloading: false,
-        download_progress: None,
-        needs_update: false,
+        steam_downloading: false,
+        steam_download_progress: None,
+        steam_needs_update: false,
         local,
     }
 }
@@ -611,7 +611,7 @@ impl LauncherApp {
                                 }
                                 if snapshot.workshop.subscriptions.iter().any(|item| {
                                     entry.published_file_id.as_deref() == Some(item.published_file_id.as_str())
-                                        && item.needs_update
+                                        && item.steam_needs_update
                                 }) {
                                     ui.colored_label(egui::Color32::YELLOW, "Update available");
                                 }
@@ -1014,12 +1014,12 @@ fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: Wo
                         if row.local.is_some() {
                             ui.label(egui::RichText::new("In Library").small().strong());
                         }
-                        if row.needs_update {
+                        if row.steam_needs_update {
                             ui.colored_label(egui::Color32::YELLOW, "Update available");
                         }
-                        if row.downloading {
+                        if row.steam_downloading {
                             if let Some((done, total)) =
-                                row.download_progress.filter(|(_, total)| *total > 0)
+                                row.steam_download_progress.filter(|(_, total)| *total > 0)
                             {
                                 ui.add(
                                     egui::ProgressBar::new(done as f32 / total as f32)
@@ -1041,7 +1041,7 @@ fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: Wo
                     }
                     if row.subscribed
                         && row.local.is_none()
-                        && !row.downloading
+                        && !row.steam_downloading
                         && !busy
                         && ui.button("Add to Library").clicked()
                     {
@@ -1248,17 +1248,17 @@ fn workshop_subscriptions_contents(
                         .unwrap_or("Community content"));
                     if row.local.is_some() {
                         ui.label(egui::RichText::new("In Library").strong());
-                    } else if row.downloading {
+                    } else if row.steam_downloading {
                         ui.label("Preparing for Library…");
                     } else {
                         ui.weak("Not in Library");
                     }
-                    if row.needs_update {
+                    if row.steam_needs_update {
                         ui.colored_label(egui::Color32::YELLOW, "Update available");
                     }
-                    if row.downloading
+                    if row.steam_downloading
                         && let Some((done, total)) =
-                            row.download_progress.filter(|(_, total)| *total > 0)
+                            row.steam_download_progress.filter(|(_, total)| *total > 0)
                     {
                         ui.add(
                             egui::ProgressBar::new(done as f32 / total as f32)
@@ -1275,7 +1275,7 @@ fn workshop_subscriptions_contents(
                             app.selected_workshop_items.remove(&row.published_file_id);
                         }
                     }
-                    if !row.downloading && row.local.is_none() && !busy
+                    if !row.steam_downloading && row.local.is_none() && !busy
                         && ui.button("Add to Library").clicked()
                     {
                         app.send(ClientAction::Workshop(WorkshopAction::Acquire {
@@ -1440,10 +1440,10 @@ mod lifecycle_tests {
                 preview_url: None,
                 updated_at_unix: 1,
                 tags: vec!["packagepack".to_owned()],
-                installed: false,
-                needs_update: false,
-                downloading: false,
-                download_progress: None,
+                steam_installed: false,
+                steam_needs_update: false,
+                steam_downloading: false,
+                steam_download_progress: None,
             }],
             ..Default::default()
         };
@@ -1541,10 +1541,10 @@ mod lifecycle_tests {
             preview_url: None,
             updated_at_unix: 1,
             tags: Vec::new(),
-            installed: true,
-            downloading: false,
-            download_progress: None,
-            needs_update: false,
+            steam_installed: true,
+            steam_downloading: false,
+            steam_download_progress: None,
+            steam_needs_update: false,
         };
         let snapshot = WorkshopSnapshot {
             subscriptions: vec![subscription("1"), subscription("2"), subscription("3")],
@@ -1586,10 +1586,10 @@ mod lifecycle_tests {
                 preview_url: None,
                 updated_at_unix: 1,
                 tags: Vec::new(),
-                installed: true,
-                downloading: false,
-                download_progress: None,
-                needs_update: false,
+                steam_installed: true,
+                steam_downloading: false,
+                steam_download_progress: None,
+                steam_needs_update: false,
             }],
             ..Default::default()
         };
