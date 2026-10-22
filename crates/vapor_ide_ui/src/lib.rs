@@ -12,8 +12,8 @@ use vapor_client_protocol::{
     ClientAction, ClientEvent, LanguageServerAction, OperationStatus, ProtocolFrame,
     WorkspaceAction, WorkspaceFileResult, WorkspaceProjectSelection, WorkspaceToolOperation,
 };
-use vapor_gui_core::{ConsoleLevel, ConsoleRecord};
 use vapor_gui_core::workspace_tree::{WorkspaceFileTree, WorkspaceTreeEntry};
+use vapor_gui_core::{ConsoleLevel, ConsoleRecord};
 
 #[derive(Clone)]
 struct Document {
@@ -885,7 +885,9 @@ impl IdeApp {
                             self.console.history.push(ConsoleRecord::new(
                                 std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
-                                    .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
+                                    .map(|duration| {
+                                        duration.as_millis().min(u64::MAX as u128) as u64
+                                    })
                                     .unwrap_or_default(),
                                 ConsoleLevel::Error,
                                 "vapor",
@@ -947,7 +949,11 @@ impl IdeApp {
                 }
                 ProtocolFrame::Event(ClientEvent::OperationOutput(output)) => {
                     for line in output.text.lines().filter(|line| !line.trim().is_empty()) {
-                        let source = if output.source.is_empty() { "command" } else { &output.source };
+                        let source = if output.source.is_empty() {
+                            "command"
+                        } else {
+                            &output.source
+                        };
                         let mut record = ConsoleRecord::new(
                             output.timestamp_unix_ms,
                             output.level,
@@ -956,7 +962,10 @@ impl IdeApp {
                         )
                         .target(output.action.clone())
                         .field("operation", output.id.clone())
-                        .field("stream", format!("{:?}", output.stream).to_ascii_lowercase());
+                        .field(
+                            "stream",
+                            format!("{:?}", output.stream).to_ascii_lowercase(),
+                        );
                         if let Some(process) = &output.process {
                             record = record.field("process", process.clone());
                         }
@@ -1858,14 +1867,18 @@ impl IdeApp {
 
     fn submit_console_command(&mut self, line: &str) {
         use vapor_client_domain::{
-            ConsoleCommand, ConsoleCommandOutcome, ConsoleCommandScope,
-            console_command_catalog,
+            ConsoleCommand, ConsoleCommandOutcome, ConsoleCommandScope, console_command_catalog,
         };
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
             .unwrap_or_default();
-        self.console.history.push(ConsoleRecord::new(now, ConsoleLevel::Input, "console", line));
+        self.console.history.push(ConsoleRecord::new(
+            now,
+            ConsoleLevel::Input,
+            "console",
+            line,
+        ));
         match ConsoleCommand::parse(line) {
             Ok(ConsoleCommand::Help) => {
                 for command in console_command_catalog(ConsoleCommandScope::Workspace) {
@@ -1875,13 +1888,16 @@ impl IdeApp {
                     );
                 }
             }
-            Ok(ConsoleCommand::Status) => self.console.history.push(
-                ConsoleRecord::new(now, ConsoleLevel::Info, "ide", self.status.clone()),
-            ),
+            Ok(ConsoleCommand::Status) => self.console.history.push(ConsoleRecord::new(
+                now,
+                ConsoleLevel::Info,
+                "ide",
+                self.status.clone(),
+            )),
             Ok(command) => match command.outcome() {
                 ConsoleCommandOutcome::Action(action) => {
                     if let Some(service) = self.service.as_mut() {
-                        match service.send(action, None) {
+                        match service.send(*action, None) {
                             Ok(request_id) => {
                                 self.console_requests.insert(request_id.0);
                             }
@@ -1894,14 +1910,20 @@ impl IdeApp {
                         }
                     } else {
                         self.console.history.push(ConsoleRecord::new(
-                            now, ConsoleLevel::Error, "vapor", "Vapor service is disconnected",
+                            now,
+                            ConsoleLevel::Error,
+                            "vapor",
+                            "Vapor service is disconnected",
                         ));
                     }
                 }
                 ConsoleCommandOutcome::Help | ConsoleCommandOutcome::Status => unreachable!(),
             },
             Err(error) => self.console.history.push(ConsoleRecord::new(
-                now, ConsoleLevel::Error, "console", format!("{error:?}"),
+                now,
+                ConsoleLevel::Error,
+                "console",
+                format!("{error:?}"),
             )),
         }
     }

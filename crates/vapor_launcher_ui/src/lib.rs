@@ -9,8 +9,8 @@ use vapor_client::{Client, ClientHostConfig, service_sibling_path};
 use vapor_client_protocol::{
     CatalogAction, CatalogEntry, CatalogItemAction, CatalogItemRole, CatalogLocationKind,
     ClientAction, ClientEvent, Composition, CompositionAction, ContentKind, InstallationState,
-    LibraryAction, OperationEvent, OperationOutputEvent, OperationPhase,
-    OperationStatus, ProtocolFrame, WorkshopAction, WorkshopItemSnapshot, WorkshopSnapshot,
+    LibraryAction, OperationEvent, OperationOutputEvent, OperationPhase, OperationStatus,
+    ProtocolFrame, WorkshopAction, WorkshopItemSnapshot, WorkshopSnapshot,
 };
 use vapor_gui_core::{ConsoleLevel, ConsoleRecord};
 
@@ -503,8 +503,15 @@ impl LauncherApp {
                 }
                 ProtocolFrame::Response(response) => {
                     if let Some(error) = response.error {
-                        self.push_console_record(ConsoleLevel::Error, "vapor", &error.message, None);
-                        self.status = "That request could not be completed. Open the console for details.".to_owned();
+                        self.push_console_record(
+                            ConsoleLevel::Error,
+                            "vapor",
+                            &error.message,
+                            None,
+                        );
+                        self.status =
+                            "That request could not be completed. Open the console for details."
+                                .to_owned();
                     }
                 }
                 _ => {}
@@ -553,14 +560,20 @@ impl LauncherApp {
             let mut record = ConsoleRecord::new(
                 output.timestamp_unix_ms,
                 output.level,
-                if output.source.is_empty() { "command" } else { &output.source },
+                if output.source.is_empty() {
+                    "command"
+                } else {
+                    &output.source
+                },
                 line,
             );
             if !output.action.is_empty() {
                 record = record.target(output.action.clone());
             }
-            record = record.field("operation", output.id.clone())
-                .field("stream", format!("{:?}", output.stream).to_ascii_lowercase());
+            record = record.field("operation", output.id.clone()).field(
+                "stream",
+                format!("{:?}", output.stream).to_ascii_lowercase(),
+            );
             if let Some(process) = &output.process {
                 record = record.field("process", process.clone());
             }
@@ -1944,9 +1957,7 @@ impl eframe::App for LauncherApp {
                     });
                     match &event.status {
                         OperationStatus::Failed { .. } => {
-                            ui.weak(
-                            "The full error and command output are in the console.",
-                            );
+                            ui.weak("The full error and command output are in the console.");
                         }
                         OperationStatus::Running => {
                             if let Some(message) = event.message.as_deref() {

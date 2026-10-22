@@ -78,8 +78,8 @@ impl ConsolePanelState {
                 ui.horizontal_wrapped(|ui| {
                     ui.weak("Show");
                     for level in LEVELS {
-                        let mut selected = self.filter.levels.is_empty()
-                            || self.filter.levels.contains(&level);
+                        let mut selected =
+                            self.filter.levels.is_empty() || self.filter.levels.contains(&level);
                         if ui.toggle_value(&mut selected, level.label()).changed() {
                             if self.filter.levels.is_empty() {
                                 self.filter.levels = LEVELS.to_vec();
@@ -177,7 +177,8 @@ impl ConsolePanelState {
                             let next = self.history_cursor.map(|index| index + 1);
                             self.history_cursor =
                                 next.filter(|index| *index < self.prompt_history.len());
-                            self.command = self.history_cursor
+                            self.command = self
+                                .history_cursor
                                 .and_then(|index| self.prompt_history.get(index))
                                 .unwrap_or("")
                                 .to_owned();
