@@ -3,15 +3,16 @@ use std::{
     collections::HashSet,
     sync::mpsc::{self, Receiver, TryRecvError},
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use vapor_client::{Client, ClientHostConfig, service_sibling_path};
 use vapor_client_protocol::{
     CatalogAction, CatalogEntry, CatalogItemAction, CatalogItemRole, CatalogLocationKind,
     ClientAction, ClientEvent, Composition, CompositionAction, ContentKind, InstallationState,
-    LibraryAction, OperationStatus, ProtocolFrame, WorkshopAction, WorkshopItemSnapshot,
-    WorkshopSnapshot,
+    LibraryAction, OperationEvent, OperationOutputEvent, OperationOutputStream, OperationPhase,
+    OperationStatus, ProtocolFrame, WorkshopAction, WorkshopItemSnapshot, WorkshopSnapshot,
 };
+use vapor_gui_core::{ConsoleFilter, ConsoleHistory, ConsoleLevel, ConsoleRecord};
 
 const WORKSHOP_RESULTS_PER_PAGE: u32 = 50;
 
@@ -241,6 +242,119 @@ fn can_remove_cached_copy(entry: &CatalogEntry, compositions: &[Composition]) ->
     catalog_entry_has_cached_copy(entry) && !composition_uses_content(compositions, &entry.id)
 }
 
+fn operation_brief(event: &OperationEvent) -> String {
+    match &event.status {
+        OperationStatus::Running => format!(
+            "{}: {}",
+            operation_action_label(&event.action),
+            phase_label(event.phase)
+        ),
+        OperationStatus::Cancelling => {
+            format!("Stopping {}...", operation_action_label(&event.action))
+        }
+        OperationStatus::Succeeded => event.message.clone().unwrap_or_else(|| "Done".to_owned()),
+        OperationStatus::Failed { .. } => {
+            "That operation failed. Open Command details for the error.".to_owned()
+        }
+        OperationStatus::Cancelled => "Operation cancelled.".to_owned(),
+    }
+}
+
+fn operation_action_label(action: &str) -> &'static str {
+    match action {
+        "composition.launch" => "Starting your game",
+        "composition.install" => "Installing your game",
+        "composition.repair" => "Repairing your setup",
+        "composition.update" => "Updating your setup",
+        "composition.verify" => "Checking your setup",
+        "workshop.subscribe" => "Adding Workshop content",
+        "workshop.unsubscribe" => "Removing a Workshop subscription",
+        "workshop.search" => "Searching Workshop",
+        "workshop.acquire" => "Downloading Workshop content",
+        "catalog.refresh" => "Refreshing your Library",
+        "library.acquire" => "Adding content to your Library",
+        _ => "Working",
+    }
+}
+
+fn phase_label(phase: OperationPhase) -> &'static str {
+    match phase {
+        OperationPhase::Queued => "Waiting",
+        OperationPhase::Resolving => "Preparing",
+        OperationPhase::Acquiring => "Downloading",
+        OperationPhase::Installing => "Installing",
+        OperationPhase::Verifying => "Checking files",
+        OperationPhase::Building => "Building",
+        OperationPhase::Running => "Running",
+        OperationPhase::Staging => "Preparing files",
+        OperationPhase::Publishing => "Publishing",
+        OperationPhase::Finalizing | OperationPhase::Complete => "Finishing",
+    }
+}
+
+fn operation_output_level(stream: OperationOutputStream, text: &str) -> ConsoleLevel {
+    let lower = text.trim().to_ascii_lowercase();
+    if lower.contains("error") || lower.contains("failed") || lower.contains("fatal") {
+        ConsoleLevel::Error
+    } else if lower.contains("warning") || stream == OperationOutputStream::Stderr {
+        ConsoleLevel::Warn
+    } else if lower.contains("finished") || lower.contains("success") {
+        ConsoleLevel::Success
+    } else {
+        ConsoleLevel::Info
+    }
+}
+
+fn has_packagepack_auto_install_owner(
+    snapshot: &vapor_client_protocol::ClientSnapshot,
+    content_id: &str,
+) -> bool {
+    if snapshot
+        .durable_state
+        .library_policies
+        .iter()
+        .find(|policy| policy.content_id.as_str() == content_id)
+        .is_some_and(|policy| !policy.packagepack_owners.is_empty())
+    {
+        return true;
+    }
+    snapshot
+        .durable_state
+        .compositions
+        .compositions
+        .iter()
+        .any(|composition| {
+            if !matches!(
+                &composition.installation,
+                InstallationState::Installed { .. }
+                    | InstallationState::OutOfDate { .. }
+                    | InstallationState::Partial { .. }
+                    | InstallationState::NeedsRepair { .. }
+            ) {
+                return false;
+            }
+            let Some(root) = composition.root_package.as_ref() else {
+                return false;
+            };
+            if !snapshot
+                .catalog
+                .iter()
+                .any(|entry| entry.id == root.id && entry.kind == "packagepack")
+            {
+                return false;
+            }
+            composition.resolved_graph.as_ref().is_some_and(|graph| {
+                graph.nodes.iter().any(|node| {
+                    node.content.id == content_id
+                        || node
+                            .dependencies
+                            .iter()
+                            .any(|dependency| dependency.content.id == content_id)
+                })
+            })
+        })
+}
+
 pub struct LauncherApp {
     page: Page,
     service: Option<Client>,
@@ -260,6 +374,10 @@ pub struct LauncherApp {
     workshop_page_size: usize,
     workshop_result_offset: usize,
     status: String,
+    latest_operation: Option<OperationEvent>,
+    operation_log: ConsoleHistory,
+    operation_log_filter: ConsoleFilter,
+    operation_log_expanded: bool,
 }
 
 impl LauncherApp {
@@ -287,7 +405,11 @@ impl LauncherApp {
                 .filter(|size| [10, 20, 50].contains(size))
                 .unwrap_or(20),
             workshop_result_offset: 0,
-            status: "Connecting to Vapor…".to_owned(),
+            status: "Connecting to Vapor...".to_owned(),
+            latest_operation: None,
+            operation_log: ConsoleHistory::new(2_000),
+            operation_log_filter: ConsoleFilter::default(),
+            operation_log_expanded: false,
         }
     }
 
@@ -305,7 +427,7 @@ impl LauncherApp {
         let (sender, receiver) = mpsc::channel();
         self.connecting = Some(receiver);
         self.service_error = None;
-        self.status = "Connecting to Vapor…".to_owned();
+        self.status = "Connecting to Vapor...".to_owned();
         let attempt = thread::Builder::new()
             .name("vapor-launcher-service-connect".to_owned())
             .spawn(move || {
@@ -354,34 +476,58 @@ impl LauncherApp {
         let Some(service) = self.service.as_mut() else {
             return;
         };
+        let mut frames = Vec::new();
         let mut disconnected = false;
+        let mut connection_error = None;
         loop {
             match service.try_recv() {
-                Ok(Some(ProtocolFrame::Event(ClientEvent::OperationChanged(event)))) => {
-                    self.status = event.message.unwrap_or_else(|| match event.status {
-                        OperationStatus::Running => "Working…".to_owned(),
-                        OperationStatus::Cancelling => "Stopping…".to_owned(),
-                        OperationStatus::Succeeded => "Done".to_owned(),
-                        OperationStatus::Failed { message } => message,
-                        OperationStatus::Cancelled => "Cancelled".to_owned(),
-                    });
-                }
-                Ok(Some(ProtocolFrame::Response(response))) => {
-                    if let Some(error) = response.error {
-                        self.status = error.message;
-                    }
-                }
-                Ok(Some(_)) => {}
+                Ok(Some(frame)) => frames.push(frame),
                 Ok(None) => break,
                 Err(error) => {
-                    self.service_error = Some(error.to_string());
-                    self.status = "Vapor connection was lost.".to_owned();
+                    connection_error = Some(error.to_string());
                     disconnected = true;
                     break;
                 }
             }
         }
+        for frame in frames {
+            match frame {
+                ProtocolFrame::Event(ClientEvent::OperationChanged(event)) => {
+                    if let OperationStatus::Failed { message } = &event.status {
+                        self.push_operation_log(
+                            ConsoleLevel::Error,
+                            "vapor",
+                            message,
+                            Some(event.id.as_str()),
+                        );
+                    } else if matches!(event.status, OperationStatus::Succeeded)
+                        && let Some(message) = event.message.as_deref()
+                    {
+                        self.push_operation_log(
+                            ConsoleLevel::Success,
+                            "vapor",
+                            message,
+                            Some(event.id.as_str()),
+                        );
+                    }
+                    self.status = operation_brief(&event);
+                    self.latest_operation = Some(event);
+                }
+                ProtocolFrame::Event(ClientEvent::OperationOutput(output)) => {
+                    self.receive_operation_output(output);
+                }
+                ProtocolFrame::Response(response) => {
+                    if let Some(error) = response.error {
+                        self.push_operation_log(ConsoleLevel::Error, "vapor", &error.message, None);
+                        self.status = "That request could not be completed. Open Command details for the error.".to_owned();
+                    }
+                }
+                _ => {}
+            }
+        }
         if disconnected {
+            self.service_error = connection_error;
+            self.status = "Vapor connection was lost.".to_owned();
             self.service = None;
             self.connect_attempted = false;
             self.next_connect_attempt = Instant::now() + self.reconnect_delay;
@@ -393,12 +539,38 @@ impl LauncherApp {
             return;
         };
         match service.send(action, None) {
-            Ok(_) => self.status = "Request sent to Vapor…".to_owned(),
+            Ok(_) => self.status = "Request sent to Vapor...".to_owned(),
             Err(error) => {
                 self.service_error = Some(error.to_string());
                 self.status = "Vapor connection was lost.".to_owned();
             }
         }
+    }
+
+    fn receive_operation_output(&mut self, output: OperationOutputEvent) {
+        let level = operation_output_level(output.stream, &output.text);
+        let text = vapor_gui_core::plain_terminal_text(&output.text);
+        for line in text.lines().filter(|line| !line.trim().is_empty()) {
+            self.push_operation_log(level, "command", line, Some(output.id.as_str()));
+        }
+    }
+
+    fn push_operation_log(
+        &mut self,
+        level: ConsoleLevel,
+        source: &str,
+        message: &str,
+        operation_id: Option<&str>,
+    ) {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
+            .unwrap_or_default();
+        let mut record = ConsoleRecord::new(timestamp, level, source, message);
+        if let Some(operation_id) = operation_id {
+            record = record.field("operation", operation_id);
+        }
+        self.operation_log.push(record);
     }
 
     fn search_workshop(&mut self, page: u32) {
@@ -516,7 +688,7 @@ impl LauncherApp {
                     .catalog_status
                     .error
                     .as_deref()
-                    .unwrap_or("Refreshing Library…"),
+                    .unwrap_or("Refreshing Library..."),
             );
             return;
         }
@@ -559,17 +731,17 @@ impl LauncherApp {
                     .filter(|candidate| candidate.id == entry.id)
                     .count()
                     == 1;
-                let can_auto_install = vapor_client_protocol::can_auto_install_library_item(
-                    &entry.kind,
-                    entry.published_file_id.is_some(),
-                    is_downloaded,
-                    is_unambiguous,
-                );
                 let auto_install = snapshot
                     .durable_state
                     .library_policies
                     .iter()
                     .any(|policy| policy.content_id.as_str() == entry.id && policy.auto_install);
+                let can_auto_install = vapor_client_protocol::can_auto_install_library_item(
+                    &entry.kind,
+                    entry.published_file_id.is_some(),
+                    is_downloaded,
+                    is_unambiguous,
+                ) && (auto_install || has_packagepack_auto_install_owner(&snapshot, &entry.id));
                 let add_to_play = create_composition_action(&entry);
                 let subscribed = snapshot.workshop.subscriptions.iter().any(|item| {
                     entry.published_file_id.as_deref() == Some(item.published_file_id.as_str())
@@ -593,7 +765,7 @@ impl LauncherApp {
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
                             ui.label(format!(
-                                "{} · {}",
+                                "{} | {}",
                                 friendly_kind(&entry.kind),
                                 entry.version.as_deref().unwrap_or("version unknown")
                             ));
@@ -645,13 +817,13 @@ impl LauncherApp {
                                 || can_remove
                                 || can_auto_install
                             {
-                                ui.menu_button("⋯", |ui| {
+                                ui.menu_button("More", |ui| {
                                     if can_auto_install {
                                         let mut enabled = auto_install;
                                         if ui
                                             .checkbox(&mut enabled, "Auto-Install")
                                             .on_hover_text(
-                                                "Follow compatible Workshop updates and remove the local copy when no composition uses it.",
+                                "Vapor manages this dependency for its Packagepack: it follows compatible Workshop updates, then removes the local copy and subscription when no composition or subscribed Packagepack needs it. Manually added content cannot be managed this way.",
                                             )
                                             .changed()
                                         {
@@ -812,7 +984,7 @@ fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: Wo
         let local_page_count = results.items.len().div_ceil(app.workshop_page_size).max(1);
         ui.horizontal(|ui| {
             ui.weak(format!(
-                "Steam page {} of {} · results page {} of {} · {} total",
+                "Steam page {} of {} | results page {} of {} | {} total",
                 results.page,
                 page_count,
                 app.workshop_result_offset / app.workshop_page_size + 1,
@@ -836,7 +1008,7 @@ fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: Wo
                 if ui
                     .add_enabled(
                         !busy && results.page < page_count,
-                        egui::Button::new("Next →"),
+                        egui::Button::new("Next"),
                     )
                     .clicked()
                 {
@@ -850,7 +1022,7 @@ fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: Wo
                     }));
                 }
                 if ui
-                    .add_enabled(!busy && results.page > 1, egui::Button::new("← Previous"))
+                    .add_enabled(!busy && results.page > 1, egui::Button::new("Previous"))
                     .clicked()
                 {
                     app.workshop_result_offset = 0;
@@ -869,7 +1041,7 @@ fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: Wo
                 if ui
                     .add_enabled(
                         app.workshop_result_offset > 0,
-                        egui::Button::new("← Previous results"),
+                        egui::Button::new("Previous results"),
                     )
                     .clicked()
                 {
@@ -881,7 +1053,7 @@ fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: Wo
                 if ui
                     .add_enabled(
                         app.workshop_result_offset + app.workshop_page_size < results.items.len(),
-                        egui::Button::new("More results →"),
+                        egui::Button::new("More results"),
                     )
                     .clicked()
                 {
@@ -969,7 +1141,7 @@ fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: Wo
 
     let has_subscriptions = rows.iter().any(|row| row.subscribed);
     if !snapshot.subscriptions_loaded {
-        ui.label("Loading your subscriptions…");
+        ui.label("Loading your subscriptions...");
     } else if !has_subscriptions && matching_search.is_none() {
         ui.label("Your Workshop items and new discoveries will appear here.");
     }
@@ -1026,7 +1198,7 @@ fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: Wo
                                         .desired_width(120.0),
                                 );
                             } else {
-                                ui.weak("Downloading from Workshop…");
+                                ui.weak("Downloading from Workshop...");
                             }
                         }
                     });
@@ -1055,7 +1227,7 @@ fn workshop_page_contents(app: &mut LauncherApp, ui: &mut egui::Ui, snapshot: Wo
                         }));
                     }
                     if row.subscribed && !busy {
-                        ui.menu_button("⋯", |ui| {
+                        ui.menu_button("More", |ui| {
                             if ui.button("Unsubscribe").clicked() {
                                 app.send(ClientAction::Workshop(WorkshopAction::Unsubscribe {
                                     item_ids: vec![row.published_file_id.clone()],
@@ -1164,7 +1336,7 @@ fn workshop_subscriptions_contents(
         });
         ui.weak("Subscriptions belong to your Steam account. Availability in the Library is specific to this device.");
         if !snapshot.subscriptions_loaded {
-            ui.label("Loading your Workshop subscriptions…");
+            ui.label("Loading your Workshop subscriptions...");
             return;
         }
         if rows.is_empty() {
@@ -1188,7 +1360,7 @@ fn workshop_subscriptions_contents(
             if ui
                 .add_enabled(
                     app.subscriptions_offset > 0,
-                    egui::Button::new("← Previous"),
+                    egui::Button::new("Previous"),
                 )
                 .clicked()
             {
@@ -1200,7 +1372,7 @@ fn workshop_subscriptions_contents(
             if ui
                 .add_enabled(
                     app.subscriptions_offset + app.workshop_page_size < rows.len(),
-                    egui::Button::new("Next →"),
+                    egui::Button::new("Next"),
                 )
                 .clicked()
             {
@@ -1249,7 +1421,7 @@ fn workshop_subscriptions_contents(
                     if row.local.is_some() {
                         ui.label(egui::RichText::new("In Library").strong());
                     } else if row.steam_downloading {
-                        ui.label("Downloading from Workshop…");
+                        ui.label("Downloading from Workshop...");
                     } else {
                         ui.weak("Not in Library");
                     }
@@ -1293,7 +1465,7 @@ fn workshop_subscriptions_contents(
                         can_remove_cached_copy(entry, &compositions)
                     });
                     if !busy {
-                        ui.menu_button("⋯", |ui| {
+                        ui.menu_button("More", |ui| {
                             if can_remove
                                 && let Some(entry) = row.local.as_ref()
                                 && ui.button("Remove from this device").clicked()
@@ -1496,6 +1668,7 @@ mod lifecycle_tests {
             kind: "packagepack".to_owned(),
             published_file_id: Some("123".to_owned()),
             dependencies: Vec::new(),
+            dependency_details: Vec::new(),
             conflicts: Vec::new(),
             locations: Vec::new(),
             role: CatalogItemRole::PlayableComposition,
@@ -1640,6 +1813,7 @@ mod lifecycle_tests {
             kind: "mod".to_owned(),
             published_file_id: Some("123".to_owned()),
             dependencies: Vec::new(),
+            dependency_details: Vec::new(),
             conflicts: Vec::new(),
             locations: vec![vapor_client_protocol::CatalogLocation {
                 kind: CatalogLocationKind::Cache,
@@ -1700,6 +1874,68 @@ impl eframe::App for LauncherApp {
                 Page::Library => self.library_page(ui),
                 Page::Workshop => self.workshop_page(ui),
             });
+            if let Some(event) = self.latest_operation.clone() {
+                vapor_gui_core::panel::Panel::new("Activity", |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.strong(operation_action_label(&event.action));
+                        let (label, color) = match &event.status {
+                            OperationStatus::Running => {
+                                (phase_label(event.phase), egui::Color32::LIGHT_BLUE)
+                            }
+                            OperationStatus::Cancelling => ("Stopping", egui::Color32::YELLOW),
+                            OperationStatus::Succeeded => ("Done", egui::Color32::LIGHT_GREEN),
+                            OperationStatus::Failed { .. } => {
+                                ("Needs attention", egui::Color32::LIGHT_RED)
+                            }
+                            OperationStatus::Cancelled => {
+                                ("Cancelled", ui.visuals().weak_text_color())
+                            }
+                        };
+                        if matches!(event.status, OperationStatus::Running) {
+                            vapor_gui_core::icons::console_mark(ui, ConsoleLevel::Info);
+                        } else if matches!(event.status, OperationStatus::Succeeded) {
+                            vapor_gui_core::icons::console_mark(ui, ConsoleLevel::Success);
+                        } else if matches!(event.status, OperationStatus::Failed { .. }) {
+                            vapor_gui_core::icons::console_mark(ui, ConsoleLevel::Error);
+                        } else if matches!(event.status, OperationStatus::Cancelling) {
+                            vapor_gui_core::icons::console_mark(ui, ConsoleLevel::Warn);
+                        }
+                        ui.colored_label(color, label);
+                        if matches!(
+                            event.status,
+                            OperationStatus::Running | OperationStatus::Cancelling
+                        ) && let Some(progress) = event.progress
+                        {
+                            ui.add(
+                                egui::ProgressBar::new(progress.clamp(0.0, 1.0))
+                                    .desired_width(150.0),
+                            );
+                        }
+                    });
+                    match &event.status {
+                        OperationStatus::Failed { .. } => {
+                            ui.weak(
+                                "The full error and command output are in Command details below.",
+                            );
+                        }
+                        OperationStatus::Running => {
+                            if let Some(message) = event.message.as_deref() {
+                                ui.label(message);
+                            }
+                        }
+                        _ => {}
+                    }
+                })
+                .show(ui);
+            }
+            if !self.operation_log.is_empty() {
+                vapor_gui_core::console::show_operation_log(
+                    ui,
+                    &mut self.operation_log,
+                    &mut self.operation_log_filter,
+                    &mut self.operation_log_expanded,
+                );
+            }
             ui.separator();
             ui.horizontal_wrapped(|ui| {
                 ui.label(&self.status);
@@ -1771,6 +2007,7 @@ mod tests {
             kind: "packagepack".into(),
             published_file_id: Some("3823734148".into()),
             dependencies: vec![],
+            dependency_details: vec![],
             conflicts: vec![],
             locations: vec![],
             role: CatalogItemRole::PlayableComposition,

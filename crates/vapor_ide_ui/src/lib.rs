@@ -159,7 +159,7 @@ impl IdeApp {
             project_query: String::new(),
             save_queue: VecDeque::new(),
             pending: None,
-            status: "Connecting to Vapor…".to_owned(),
+            status: "Connecting to Vapor...".to_owned(),
             build_output: Vec::new(),
             bottom_open: true,
             inspector_open: true,
@@ -199,7 +199,7 @@ impl IdeApp {
         let workspace = nonempty_path(&self.workspace_input);
         let (sender, receiver) = mpsc::channel();
         self.connecting = Some(receiver);
-        self.status = "Connecting to the shared Vapor service…".to_owned();
+        self.status = "Connecting to the shared Vapor service...".to_owned();
         let result = thread::Builder::new()
             .name("vapor-ide-service-connect".to_owned())
             .spawn(move || {
@@ -287,7 +287,7 @@ impl IdeApp {
         self.next_lsp_request_id = 2;
         self.lsp_requests.clear();
         self.completion_items.clear();
-        self.language_server_status = "Starting Vapor-managed Rust Analyzer…".to_owned();
+        self.language_server_status = "Starting Vapor-managed Rust Analyzer...".to_owned();
         self.send_language_server_action(
             LanguageServerAction::Start {
                 workspace_root: root.display().to_string(),
@@ -328,7 +328,7 @@ impl IdeApp {
                 "workspaceFolders": [{"uri": root_uri, "name": root.file_name().unwrap_or_default().to_string_lossy()}]
             }
         });
-        self.language_server_status = "Initializing Rust workspace…".to_owned();
+        self.language_server_status = "Initializing Rust workspace...".to_owned();
         self.send_language_server_notification(initialize);
     }
 
@@ -691,7 +691,7 @@ impl IdeApp {
                     action: pending,
                     operation_id: None,
                 });
-                self.status = "Working…".to_owned();
+                self.status = "Working...".to_owned();
             }
             Err(error) => {
                 self.service = None;
@@ -1154,7 +1154,7 @@ impl IdeApp {
                     if ui
                         .add_enabled(
                             self.workspace.is_some() && self.pending.is_none(),
-                            egui::Button::new("New file…"),
+                            egui::Button::new("New file..."),
                         )
                         .clicked()
                     {
@@ -1393,7 +1393,7 @@ impl IdeApp {
             });
         });
         let search = ui.add(
-            egui::TextEdit::singleline(&mut self.file_query).hint_text("Filter files · Ctrl/Cmd+P"),
+            egui::TextEdit::singleline(&mut self.file_query).hint_text("Filter files | Ctrl/Cmd+P"),
         );
         if self.focus_file_query {
             search.request_focus();
@@ -1448,14 +1448,14 @@ impl IdeApp {
                     if ui
                         .selectable_label(
                             selected,
-                            format!("{label}{}", if dirty { " •" } else { "" }),
+                            format!("{label}{}", if dirty { " *" } else { "" }),
                         )
                         .clicked()
                     {
                         self.selected_file = Some(path.clone());
                     }
                     if ui
-                        .add_enabled(!dirty && self.pending.is_none(), egui::Button::new("×"))
+                        .add_enabled(!dirty && self.pending.is_none(), egui::Button::new("Close"))
                         .on_hover_text(if dirty {
                             "Save this file before closing it."
                         } else {
@@ -1483,7 +1483,7 @@ impl IdeApp {
             return;
         };
         if !self.documents.contains_key(&path) {
-            ui.label("Opening file…");
+            ui.label("Opening file...");
             return;
         }
         if self
@@ -1542,7 +1542,11 @@ impl IdeApp {
                 {
                     find_action = Some(false);
                 }
-                if ui.small_button("×").on_hover_text("Close find").clicked() {
+                if ui
+                    .small_button("Close")
+                    .on_hover_text("Close find")
+                    .clicked()
+                {
                     close_find = true;
                 }
             });
@@ -1609,7 +1613,7 @@ impl IdeApp {
                 }
                 if ui
                     .add_enabled(self.language_server_ready, egui::Button::new("Definition"))
-                    .on_hover_text("Go to Definition · F12")
+                    .on_hover_text("Go to Definition | F12")
                     .clicked()
                 {
                     request_definition = true;
@@ -1718,7 +1722,7 @@ impl IdeApp {
             }
             if !self.references.is_empty() {
                 ui.add_space(8.0);
-                ui.label(format!("References · {}", self.references.len()));
+                ui.label(format!("References | {}", self.references.len()));
                 let references = self.references.clone();
                 let mut selected_reference = None;
                 egui::ScrollArea::vertical()
@@ -1758,7 +1762,7 @@ impl IdeApp {
     fn draw_bottom(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             let diagnostic_count = self.diagnostics.values().map(Vec::len).sum::<usize>();
-            ui.strong(format!("Problems · {diagnostic_count}"));
+            ui.strong(format!("Problems | {diagnostic_count}"));
             ui.weak(&self.language_server_status);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("Clear").clicked() {
@@ -1974,7 +1978,7 @@ fn draw_file_tree(
                     view.enabled,
                     egui::Button::selectable(
                         view.selected == Some(path),
-                        format!("{name}{}", if dirty { " •" } else { "" }),
+                        format!("{name}{}", if dirty { " *" } else { "" }),
                     ),
                 );
                 if response.clicked() {

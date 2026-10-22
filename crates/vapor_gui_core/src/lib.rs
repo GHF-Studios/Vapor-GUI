@@ -1,8 +1,14 @@
 use std::path::PathBuf;
 
 pub mod code_editor;
+pub mod console;
+pub mod icons;
 pub mod panel;
 pub mod workspace_tree;
+
+pub use vapor_console_core::{
+    ConsoleFilter, ConsoleHistory, ConsoleLevel, ConsoleRecord, plain_terminal_text,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GuiMode {
