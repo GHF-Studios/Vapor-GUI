@@ -547,6 +547,17 @@ impl LauncherApp {
         }
     }
 
+    fn service_action_enabled(&self, action: &ClientAction) -> Option<bool> {
+        let id = action.id();
+        self.service
+            .as_ref()?
+            .latest_snapshot()
+            .available_actions
+            .iter()
+            .find(|available| available.id == id)
+            .map(|available| available.enabled)
+    }
+
     fn receive_operation_output(&mut self, output: OperationOutputEvent) {
         let level = operation_output_level(output.stream, &output.text);
         let text = vapor_gui_core::plain_terminal_text(&output.text);
@@ -630,6 +641,11 @@ impl LauncherApp {
                 let active =
                     snapshot.active_composition_id.as_deref() == Some(composition.id.as_str());
                 let (intent, action) = composition_action(composition);
+                let action_enabled = self.service.is_some()
+                    && action
+                        .as_ref()
+                        .and_then(|action| self.service_action_enabled(action))
+                        .unwrap_or(true);
                 vapor_gui_core::panel::Panel::new(&composition.name, |ui| {
                     ui.horizontal_wrapped(|ui| {
                         ui.vertical(|ui| {
@@ -638,7 +654,13 @@ impl LauncherApp {
                             }
                         });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button(intent_label(intent)).clicked() {
+                            if ui
+                                .add_enabled(
+                                    action_enabled,
+                                    egui::Button::new(intent_label(intent)),
+                                )
+                                .clicked()
+                            {
                                 if let Some(action) = action.clone() {
                                     self.send(action);
                                 } else {
