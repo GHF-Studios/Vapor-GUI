@@ -54,8 +54,14 @@ diagnostic opens its file at the reported location. The Inspector also shows
 diagnostics whose source ranges overlap the selected semantic object. Managed
 Cargo output appears in the shared Console; compiler messages are shown as
 structured diagnostics with source locations, related spans, and expandable raw
-details. Diagnostic rows are virtualized so rendering cost follows the visible
-range, even when the stored problem set is large.
+details. When Rust Analyzer and a managed build report the same severity, code,
+message, and exact source span, Problems keeps one row and retains both reports
+as linked evidence; reports without source spans are only joined when their
+complete structured records are identical. Producer, domain, scope, severity,
+and text filters apply to the whole grouped issue, so filtering for a linked
+producer does not hide its primary diagnostic. Diagnostic rows are virtualized
+so rendering cost follows the visible range, even when the stored problem set
+is large.
 
 Rust Analyzer `publishDiagnostics` notifications are normalized once by the
 Vapor service into the shared protocol diagnostic shape. The IDE checks the

@@ -1,14 +1,31 @@
 use super::*;
 use crate::diagnostics::diagnostic_details;
 
+fn diagnostic_severity_label(severity: vapor_gui_core::DiagnosticSeverity) -> &'static str {
+    match severity {
+        vapor_gui_core::DiagnosticSeverity::Error => "Error",
+        vapor_gui_core::DiagnosticSeverity::Warning => "Warning",
+        vapor_gui_core::DiagnosticSeverity::Information => "Info",
+        vapor_gui_core::DiagnosticSeverity::Hint => "Hint",
+    }
+}
+
 impl IdeApp {
     pub(super) fn draw_bottom(&mut self, ui: &mut egui::Ui) {
-        let diagnostic_count = self.semantic.problems.count();
+        let diagnostic_count = self
+            .semantic
+            .problems
+            .count_filtered(&self.semantic.problem_filter);
+        let total_diagnostic_count = self.semantic.problems.count();
         ui.horizontal(|ui| {
             if ui
                 .selectable_label(
                     !self.interface.bottom_console_active,
-                    format!("Problems ({diagnostic_count})"),
+                    if diagnostic_count == total_diagnostic_count {
+                        format!("Problems ({diagnostic_count})")
+                    } else {
+                        format!("Problems ({diagnostic_count}/{total_diagnostic_count})")
+                    },
                 )
                 .clicked()
             {
@@ -48,6 +65,119 @@ impl IdeApp {
                 self.submit_console_command(&command);
             }
         } else {
+            let domains = self.semantic.problems.filter_domains();
+            ui.horizontal_wrapped(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.semantic.problem_filter.query)
+                        .hint_text("Filter problems")
+                        .desired_width(180.0),
+                );
+                egui::ComboBox::from_id_salt(ui.id().with("problem-severity"))
+                    .selected_text(
+                        self.semantic
+                            .problem_filter
+                            .severity
+                            .map_or("All severities", diagnostic_severity_label),
+                    )
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.semantic.problem_filter.severity,
+                            None,
+                            "All severities",
+                        );
+                        for severity in [
+                            vapor_gui_core::DiagnosticSeverity::Error,
+                            vapor_gui_core::DiagnosticSeverity::Warning,
+                            vapor_gui_core::DiagnosticSeverity::Information,
+                            vapor_gui_core::DiagnosticSeverity::Hint,
+                        ] {
+                            ui.selectable_value(
+                                &mut self.semantic.problem_filter.severity,
+                                Some(severity),
+                                diagnostic_severity_label(severity),
+                            );
+                        }
+                    });
+                egui::ComboBox::from_id_salt(ui.id().with("problem-origin"))
+                    .selected_text(
+                        self.semantic
+                            .problem_filter
+                            .origin
+                            .map_or("All producers", diagnostic_origin_label),
+                    )
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.semantic.problem_filter.origin,
+                            None,
+                            "All producers",
+                        );
+                        for origin in [
+                            vapor_gui_core::DiagnosticOrigin::RustAnalyzer,
+                            vapor_gui_core::DiagnosticOrigin::Cargo,
+                            vapor_gui_core::DiagnosticOrigin::Rustc,
+                            vapor_gui_core::DiagnosticOrigin::Rustdoc,
+                            vapor_gui_core::DiagnosticOrigin::Vapor,
+                        ] {
+                            ui.selectable_value(
+                                &mut self.semantic.problem_filter.origin,
+                                Some(origin),
+                                diagnostic_origin_label(origin),
+                            );
+                        }
+                    });
+                egui::ComboBox::from_id_salt(ui.id().with("problem-domain"))
+                    .selected_text(
+                        self.semantic
+                            .problem_filter
+                            .domain
+                            .as_deref()
+                            .unwrap_or("All domains"),
+                    )
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.semantic.problem_filter.domain,
+                            None,
+                            "All domains",
+                        );
+                        for domain in &domains {
+                            ui.selectable_value(
+                                &mut self.semantic.problem_filter.domain,
+                                Some(domain.clone()),
+                                domain,
+                            );
+                        }
+                    });
+                egui::ComboBox::from_id_salt(ui.id().with("problem-scope"))
+                    .selected_text(
+                        self.semantic
+                            .problem_filter
+                            .scope
+                            .map_or("All scopes", |scope| scope.label()),
+                    )
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.semantic.problem_filter.scope,
+                            None,
+                            "All scopes",
+                        );
+                        for scope in [
+                            vapor_gui_core::DiagnosticScope::Unspecified,
+                            vapor_gui_core::DiagnosticScope::Workspace,
+                            vapor_gui_core::DiagnosticScope::Document,
+                            vapor_gui_core::DiagnosticScope::SemanticObject,
+                            vapor_gui_core::DiagnosticScope::Operation,
+                        ] {
+                            ui.selectable_value(
+                                &mut self.semantic.problem_filter.scope,
+                                Some(scope),
+                                scope.label(),
+                            );
+                        }
+                    });
+                if ui.small_button("Clear filters").clicked() {
+                    self.semantic.problem_filter = Default::default();
+                }
+            });
             let mut selected_diagnostic = None;
             let mut quick_fix_request = None;
             let row_height = ui
@@ -62,7 +192,10 @@ impl IdeApp {
                         action,
                         diagnostic,
                         linked_diagnostics,
-                    } in self.semantic.problems.rows_in_range(visible_rows)
+                    } in self
+                        .semantic
+                        .problems
+                        .rows_in_filtered_range(visible_rows, &self.semantic.problem_filter)
                     {
                         let marker = match diagnostic.severity {
                             vapor_gui_core::DiagnosticSeverity::Error => "Error",

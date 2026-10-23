@@ -23,6 +23,25 @@ pub(super) struct ProblemRowRef<'a> {
     pub(super) linked_diagnostics: &'a [StructuredDiagnostic],
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(super) struct ProblemFilter {
+    pub(super) severity: Option<DiagnosticSeverity>,
+    pub(super) origin: Option<DiagnosticOrigin>,
+    pub(super) domain: Option<String>,
+    pub(super) scope: Option<vapor_gui_core::DiagnosticScope>,
+    pub(super) query: String,
+}
+
+impl ProblemFilter {
+    fn is_empty(&self) -> bool {
+        self.severity.is_none()
+            && self.origin.is_none()
+            && self.domain.is_none()
+            && self.scope.is_none()
+            && self.query.trim().is_empty()
+    }
+}
+
 pub(super) fn attach_document_context(
     diagnostics: &mut [StructuredDiagnostic],
     workspace: &Path,
@@ -236,6 +255,35 @@ impl ProblemStore {
             + usize::from(self.omitted_build_problems > 0)
     }
 
+    pub(super) fn count_filtered(&self, filter: &ProblemFilter) -> usize {
+        if filter.is_empty() {
+            return self.count();
+        }
+        self.source
+            .values()
+            .flatten()
+            .chain(self.build.iter())
+            .filter(|row| problem_row_matches(row, filter))
+            .count()
+            + usize::from(
+                self.omitted_build_problems > 0
+                    && filter_matches_diagnostic(&self.omitted_summary, filter),
+            )
+    }
+
+    pub(super) fn filter_domains(&self) -> std::collections::BTreeSet<String> {
+        self.source
+            .values()
+            .flatten()
+            .chain(self.build.iter())
+            .flat_map(|row| {
+                std::iter::once(&row.diagnostic)
+                    .chain(row.linked_diagnostics.iter())
+                    .filter_map(|diagnostic| diagnostic.context.domain.clone())
+            })
+            .collect()
+    }
+
     #[cfg(test)]
     pub(super) fn rows(&self) -> Vec<ProblemRowRef<'_>> {
         self.rows_in_range(0..self.count())
@@ -292,6 +340,51 @@ impl ProblemStore {
         rows
     }
 
+    pub(super) fn rows_in_filtered_range(
+        &self,
+        range: Range<usize>,
+        filter: &ProblemFilter,
+    ) -> Vec<ProblemRowRef<'_>> {
+        if filter.is_empty() {
+            return self.rows_in_range(range);
+        }
+        let count = self.count_filtered(filter);
+        let start = range.start.min(count);
+        let end = range.end.min(count).max(start);
+        let mut rows = Vec::with_capacity(end - start);
+        let mut offset = 0usize;
+        for row in self.source.values().flatten().chain(self.build.iter()) {
+            if !problem_row_matches(row, filter) {
+                continue;
+            }
+            if offset >= start && offset < end {
+                rows.push(ProblemRowRef {
+                    path: row.path.as_ref(),
+                    action: row.action.as_deref(),
+                    diagnostic: &row.diagnostic,
+                    linked_diagnostics: &row.linked_diagnostics,
+                });
+            }
+            offset += 1;
+            if offset >= end {
+                return rows;
+            }
+        }
+        if self.omitted_build_problems > 0
+            && filter_matches_diagnostic(&self.omitted_summary, filter)
+            && offset >= start
+            && offset < end
+        {
+            rows.push(ProblemRowRef {
+                path: None,
+                action: None,
+                diagnostic: &self.omitted_summary,
+                linked_diagnostics: &[],
+            });
+        }
+        rows
+    }
+
     fn merge_report(&mut self, incoming: &ProblemRow) -> bool {
         if let Some(path) = incoming.path.as_deref()
             && let Some(rows) = self.source.get_mut(path)
@@ -303,6 +396,47 @@ impl ProblemStore {
             .iter_mut()
             .any(|row| merge_problem_row(row, incoming))
     }
+}
+
+fn problem_row_matches(row: &ProblemRow, filter: &ProblemFilter) -> bool {
+    std::iter::once(&row.diagnostic)
+        .chain(row.linked_diagnostics.iter())
+        .any(|diagnostic| filter_matches_diagnostic(diagnostic, filter))
+}
+
+fn filter_matches_diagnostic(diagnostic: &StructuredDiagnostic, filter: &ProblemFilter) -> bool {
+    filter
+        .severity
+        .is_none_or(|severity| diagnostic.severity == severity)
+        && filter
+            .origin
+            .is_none_or(|origin| diagnostic.origin == origin)
+        && filter
+            .domain
+            .as_deref()
+            .is_none_or(|domain| diagnostic.context.domain.as_deref() == Some(domain))
+        && filter
+            .scope
+            .is_none_or(|scope| diagnostic.context.scope == scope)
+        && {
+            let query = filter.query.trim().to_lowercase();
+            query.is_empty()
+                || diagnostic.message.to_lowercase().contains(&query)
+                || diagnostic
+                    .code
+                    .as_ref()
+                    .is_some_and(|code| code.to_lowercase().contains(&query))
+                || diagnostic
+                    .rendered
+                    .as_ref()
+                    .is_some_and(|rendered| rendered.to_lowercase().contains(&query))
+                || diagnostic.raw_payload.to_lowercase().contains(&query)
+                || diagnostic
+                    .context
+                    .operation_id
+                    .as_ref()
+                    .is_some_and(|operation| operation.to_lowercase().contains(&query))
+        }
 }
 
 fn merge_problem_row(existing: &mut ProblemRow, incoming: &ProblemRow) -> bool {
@@ -717,6 +851,50 @@ mod tests {
         assert_eq!(rows[0].diagnostic.origin, DiagnosticOrigin::RustAnalyzer);
         assert!(rows[0].linked_diagnostics.is_empty());
         assert_eq!(rows[0].action, None);
+    }
+
+    #[test]
+    fn problem_filters_match_any_linked_producer_but_keep_the_grouped_row() {
+        let mut store = ProblemStore::default();
+        let mut language = source_diagnostic(4, 1, 6);
+        language.context.domain = Some("rust".to_owned());
+        language.context.scope = vapor_gui_core::DiagnosticScope::Document;
+        store.replace_source_diagnostics(
+            PathBuf::from("src/components.rs"),
+            DiagnosticOrigin::RustAnalyzer,
+            vec![language],
+        );
+        store.begin_build("compile-17");
+        let mut cargo = source_diagnostic(4, 1, 6);
+        cargo.origin = DiagnosticOrigin::Cargo;
+        cargo.context.domain = Some("rust".to_owned());
+        cargo.context.scope = vapor_gui_core::DiagnosticScope::Document;
+        store.push_build(
+            "compile-17",
+            ProblemRow {
+                path: Some(PathBuf::from("src/components.rs")),
+                action: Some("workspace.check".to_owned()),
+                diagnostic: cargo,
+                linked_diagnostics: Vec::new(),
+            },
+        );
+
+        let filter = ProblemFilter {
+            origin: Some(DiagnosticOrigin::Cargo),
+            domain: Some("rust".to_owned()),
+            scope: Some(vapor_gui_core::DiagnosticScope::Document),
+            query: "compile-17".to_owned(),
+            ..Default::default()
+        };
+        assert_eq!(store.count_filtered(&filter), 1);
+        let rows = store.rows_in_filtered_range(0..1, &filter);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].diagnostic.origin, DiagnosticOrigin::RustAnalyzer);
+        assert_eq!(rows[0].linked_diagnostics.len(), 1);
+        assert_eq!(
+            store.filter_domains().into_iter().collect::<Vec<_>>(),
+            vec!["rust"]
+        );
     }
 
     #[test]

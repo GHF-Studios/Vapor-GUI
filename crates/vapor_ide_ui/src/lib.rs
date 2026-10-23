@@ -279,6 +279,7 @@ impl Default for LanguageServerState {
 #[derive(Default)]
 struct SemanticWorkbenchState {
     problems: ProblemStore,
+    problem_filter: diagnostics::ProblemFilter,
     index: SemanticWorkspaceIndex,
     match_cache: semantic_view::SemanticMatchCache,
     selected: Option<SemanticObjectRef>,
