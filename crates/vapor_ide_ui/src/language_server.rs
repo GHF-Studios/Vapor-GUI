@@ -86,6 +86,19 @@ pub(super) fn workspace_versions_match(
         })
 }
 
+pub(super) fn pending_request_snapshot_is_current(
+    request: &PendingLspRequest,
+    documents: &BTreeMap<PathBuf, Document>,
+) -> bool {
+    documents
+        .get(&request.path)
+        .is_some_and(|document| document.version == request.document_version)
+        && request
+            .workspace_versions
+            .as_ref()
+            .is_some_and(|versions| workspace_versions_match(versions, documents))
+}
+
 
 impl IdeApp {
     pub(super) fn send_language_server_action(
@@ -548,11 +561,15 @@ impl IdeApp {
             .show(context, |ui| {
                 ui.label("Choose a direct edit to preview. Commands that could run outside the editor are hidden.");
                 ui.separator();
-                for (index, action) in self.language_server.code_actions.iter().enumerate() {
-                    if ui.button(&action.title).clicked() {
-                        selected = Some(index);
-                    }
-                }
+                egui::ScrollArea::vertical()
+                    .max_height(360.0)
+                    .show(ui, |ui| {
+                        for (index, action) in self.language_server.code_actions.iter().enumerate() {
+                            if ui.button(&action.title).clicked() {
+                                selected = Some(index);
+                            }
+                        }
+                    });
             });
         if !open {
             self.language_server.code_actions.clear();
@@ -567,11 +584,7 @@ impl IdeApp {
             self.workspace.status = "The quick-fix request is no longer available.".to_owned();
             return;
         };
-        let versions_are_current = request.workspace_versions.as_ref()
-            .is_some_and(|versions| workspace_versions_match(versions, &self.editor.documents));
-        let document_is_current = self.editor.documents.get(&request.path)
-            .is_some_and(|document| document.version == request.document_version);
-        if !versions_are_current || !document_is_current {
+        if !pending_request_snapshot_is_current(&request, &self.editor.documents) {
             self.language_server.code_actions.clear();
             self.language_server.code_action_request = None;
             self.workspace.status = "The source changed after quick fixes were requested; request them again.".to_owned();
@@ -1182,12 +1195,7 @@ impl IdeApp {
                 return;
             }
             if request.request == LspRequest::CodeActions {
-                let request_is_current = self.editor.documents
-                    .get(&request.path)
-                    .is_some_and(|document| document.version == request.document_version)
-                    && request.workspace_versions.as_ref()
-                        .is_some_and(|versions| workspace_versions_match(versions, &self.editor.documents));
-                if !request_is_current {
+                if !pending_request_snapshot_is_current(&request, &self.editor.documents) {
                     self.workspace.status = "The source changed while Rust Analyzer prepared quick fixes; request them again.".to_owned();
                     return;
                 }

@@ -3,6 +3,7 @@ use super::{
     apply_text_edits, apply_versioned_edit, completion_items,
     operation_produces_build_diagnostics, reference_request_matches_selection,
     pending_lsp_requests_for_cancellation,
+    pending_request_snapshot_is_current,
     workspace_versions_match,
     semantic_source_limit_diagnostic,
     workspace_diagnostic_path,
@@ -697,6 +698,34 @@ fn rust_workspace_results_require_the_exact_open_document_revision_set() {
     documents.get_mut(Path::new("src/game.rs")).unwrap().version = 9;
     documents.remove(Path::new("src/lib.rs"));
     assert!(!workspace_versions_match(&snapshot, &documents));
+}
+
+#[test]
+fn quick_fix_results_require_the_origin_document_and_full_workspace_snapshot() {
+    let source = PathBuf::from("src/lib.rs");
+    let mut documents = BTreeMap::from([
+        (source.clone(), Document { contents: String::new(), fingerprint: String::new(), saved_contents: String::new(), version: 4 }),
+        (PathBuf::from("src/game.rs"), Document { contents: String::new(), fingerprint: String::new(), saved_contents: String::new(), version: 9 }),
+    ]);
+    let request = super::PendingLspRequest {
+        request: super::LspRequest::CodeActions,
+        path: source.clone(),
+        document_version: 4,
+        semantic_target: None,
+        cursor_offset: None,
+        workspace_versions: Some(BTreeMap::from([
+            (source.clone(), 4),
+            (PathBuf::from("src/game.rs"), 9),
+        ])),
+        query: None,
+    };
+    assert!(pending_request_snapshot_is_current(&request, &documents));
+
+    documents.get_mut(&source).unwrap().version += 1;
+    assert!(!pending_request_snapshot_is_current(&request, &documents));
+    documents.get_mut(&source).unwrap().version = 4;
+    documents.remove(Path::new("src/game.rs"));
+    assert!(!pending_request_snapshot_is_current(&request, &documents));
 }
 
 #[test]

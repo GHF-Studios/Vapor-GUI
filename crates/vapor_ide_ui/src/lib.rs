@@ -56,7 +56,8 @@ use workspace_navigation::{
 };
 #[cfg(test)]
 use language_server::{
-    pending_lsp_requests_for_cancellation, reference_request_matches_selection,
+    pending_lsp_requests_for_cancellation, pending_request_snapshot_is_current,
+    reference_request_matches_selection,
     workspace_versions_match,
 };
 #[cfg(test)]

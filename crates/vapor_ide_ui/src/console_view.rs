@@ -74,10 +74,21 @@ impl IdeApp {
                             ),
                             (None, None) => "workspace".to_owned(),
                         };
+                        let has_quick_fix = diagnostic.origin == vapor_gui_core::DiagnosticOrigin::RustAnalyzer
+                            && path.is_some_and(|path| {
+                                path.extension().is_some_and(|extension| extension == "rs")
+                                    && self.editor.documents.contains_key(path)
+                            });
                         ui.horizontal(|ui| {
-                            let response = ui.selectable_label(
-                                false,
-                                format!("{marker} · {origin}{action}{code}  {location}  {}", diagnostic.message),
+                            let action_width = if has_quick_fix { 82.0 } else { 0.0 };
+                            let label_width = (ui.available_width() - action_width - ui.spacing().item_spacing.x).max(1.0);
+                            let response = ui.add_sized(
+                                [label_width, row_height],
+                                egui::Button::selectable(
+                                    false,
+                                    format!("{marker} · {origin}{action}{code}  {location}  {}", diagnostic.message),
+                                )
+                                .truncate(),
                             );
                             let response = response.on_hover_ui(|ui| {
                                 ui.label(diagnostic_details(diagnostic));
@@ -87,10 +98,9 @@ impl IdeApp {
                                     selected_diagnostic = Some((path.clone(), line, column));
                                 }
                             }
-                            if diagnostic.origin == vapor_gui_core::DiagnosticOrigin::RustAnalyzer
+                            if has_quick_fix
                                 && let Some(path) = path
-                                && path.extension().is_some_and(|extension| extension == "rs")
-                                && ui.small_button("Quick fix…").clicked()
+                                && ui.add_sized([action_width, row_height], egui::Button::new("Quick fix")).clicked()
                             {
                                 quick_fix_request = Some((path.clone(), diagnostic.clone()));
                             }
