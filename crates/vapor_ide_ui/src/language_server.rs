@@ -926,6 +926,10 @@ impl IdeApp {
             return;
         };
         for diagnostic in &mut batch.diagnostics {
+            diagnostic.context.workspace = Some(canonical_root.to_string_lossy().into_owned());
+            if let Some(version) = batch.version {
+                diagnostic.context.document_version = u64::try_from(version).ok();
+            }
             for span in diagnostic.primary.iter_mut().chain(diagnostic.related.iter_mut()) {
                 if let Some(path) = path_from_file_uri(&span.file) {
                     span.file = path.to_string_lossy().into_owned();

@@ -261,7 +261,13 @@ pub fn authored_manifest_diagnostics(
                 rendered: None,
                 primary,
                 related: Vec::new(),
+
                 raw_payload: format!("{kind} manifest schema mismatch"),
+                context: vapor_gui_core::DiagnosticContext {
+                    domain: Some(toml_document_domain(document)),
+                    scope: vapor_gui_core::DiagnosticScope::Document,
+                    ..Default::default()
+                },
             }];
         }
     };
@@ -276,7 +282,13 @@ pub fn authored_manifest_diagnostics(
         rendered: None,
         primary: None,
         related: Vec::new(),
+
         raw_payload: format!("missing canonical {kind} section"),
+        context: vapor_gui_core::DiagnosticContext {
+            domain: Some(toml_document_domain(document)),
+            scope: vapor_gui_core::DiagnosticScope::Document,
+            ..Default::default()
+        },
     }]
 }
 
@@ -622,6 +634,12 @@ pub(super) fn toml_parse_diagnostic(
         related: Vec::new(),
         // Keep the machine detail but avoid retaining a formatted TOML parser
         // error, which may quote source text such as credentials or tokens.
+
         raw_payload: message,
+        context: vapor_gui_core::DiagnosticContext {
+            domain: Some(toml_document_domain(path)),
+            scope: vapor_gui_core::DiagnosticScope::Document,
+            ..Default::default()
+        },
     }
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::diagnostics::diagnostic_details;
 
 impl IdeApp {
     pub(super) fn draw_bottom(&mut self, ui: &mut egui::Ui) {
@@ -39,7 +40,7 @@ impl IdeApp {
                 .id_salt("ide-diagnostics")
                 .auto_shrink([false, false])
                 .show_rows(ui, row_height, diagnostic_count, |ui, visible_rows| {
-                    for ProblemRowRef { path, operation, diagnostic } in
+                    for ProblemRowRef { path, action, diagnostic } in
                         self.semantic.problems.rows_in_range(visible_rows)
                     {
                         let marker = match diagnostic.severity {
@@ -54,9 +55,9 @@ impl IdeApp {
                         let column = navigation_span.map_or(1, |span| span.start_column as usize);
                         let code = diagnostic.code.as_deref().map_or(String::new(), |code| format!(" [{code}]"));
                         let origin = diagnostic_origin_label(diagnostic.origin);
-                        let operation = operation
-                            .filter(|operation| !operation.is_empty())
-                            .map_or_else(String::new, |operation| format!(" · {operation}"));
+                        let action = action
+                            .filter(|action| !action.is_empty())
+                            .map_or_else(String::new, |action| format!(" · {action}"));
                         let location = match (path, navigation_span) {
                             (Some(path), Some(span)) => format!(
                                 "{}:{}:{}", path.display(), span.start_line, span.start_column
@@ -69,20 +70,11 @@ impl IdeApp {
                         };
                         let response = ui.selectable_label(
                             false,
-                            format!("{marker} · {origin}{operation}{code}  {location}  {}", diagnostic.message),
+                            format!("{marker} · {origin}{action}{code}  {location}  {}", diagnostic.message),
                         );
-                        let mut details = diagnostic.message.clone();
-                        for related in &diagnostic.related {
-                            details.push_str(&format!(
-                                "\n{}:{}:{} {}",
-                                related.file,
-                                related.start_line,
-                                related.start_column,
-                                related.label.as_deref().unwrap_or("related")
-                            ));
-                        }
-                        details.push_str(&format!("\n\nRaw diagnostic\n{}", diagnostic.raw_payload));
-                        let response = response.on_hover_text(details);
+                        let response = response.on_hover_ui(|ui| {
+                            ui.label(diagnostic_details(diagnostic));
+                        });
                         if response.clicked() {
                             if let Some(path) = path {
                                 selected_diagnostic = Some((path.clone(), line, column));

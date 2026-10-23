@@ -276,7 +276,14 @@ pub(super) fn convention_diagnostics(
                     label: Some("Canonical Rust module".to_owned()),
                 }),
                 related: Vec::new(),
+
                 raw_payload: message,
+                context: vapor_gui_core::DiagnosticContext {
+                    domain: Some("rust".to_owned()),
+                    scope: vapor_gui_core::DiagnosticScope::SemanticObject,
+                    semantic_path: Some(object.id.qualified_name()),
+                    ..Default::default()
+                },
             })
         })
         .collect()

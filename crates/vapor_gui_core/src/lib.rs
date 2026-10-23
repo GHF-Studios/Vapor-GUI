@@ -9,8 +9,9 @@ pub mod semantic;
 pub mod workspace_tree;
 
 pub use vapor_console_core::{
-    ConsoleFilter, ConsoleHistory, ConsoleLevel, ConsoleRecord, DiagnosticOrigin,
-    DiagnosticSeverity, DiagnosticSpan, StructuredDiagnostic, plain_terminal_text,
+    ConsoleFilter, ConsoleHistory, ConsoleLevel, ConsoleRecord, DiagnosticContext,
+    DiagnosticOrigin, DiagnosticScope, DiagnosticSeverity, DiagnosticSpan, StructuredDiagnostic,
+    plain_terminal_text,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

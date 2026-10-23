@@ -5,13 +5,13 @@ use vapor_gui_core::{DiagnosticOrigin, DiagnosticSeverity, StructuredDiagnostic,
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ProblemRow {
     pub(super) path: Option<PathBuf>,
-    pub(super) operation: Option<String>,
+    pub(super) action: Option<String>,
     pub(super) diagnostic: StructuredDiagnostic,
 }
 
 pub(super) struct ProblemRowRef<'a> {
     pub(super) path: Option<&'a PathBuf>,
-    pub(super) operation: Option<&'a str>,
+    pub(super) action: Option<&'a str>,
     pub(super) diagnostic: &'a StructuredDiagnostic,
 }
 
@@ -40,7 +40,9 @@ impl Default for ProblemStore {
                 rendered: None,
                 primary: None,
                 related: Vec::new(),
+
                 raw_payload: String::new(),
+                context: Default::default(),
             },
         }
     }
@@ -56,8 +58,15 @@ impl ProblemStore {
         }
     }
 
-    pub(super) fn push_build(&mut self, operation_id: &str, row: ProblemRow) {
-        if self.build_operation.as_deref() != Some(operation_id) || self.build.contains(&row) {
+    pub(super) fn push_build(&mut self, operation_id: &str, mut row: ProblemRow) {
+        if self.build_operation.as_deref() != Some(operation_id) {
+            return;
+        }
+        row.diagnostic.context.operation_id = Some(operation_id.to_owned());
+        if row.diagnostic.context.scope == vapor_gui_core::DiagnosticScope::Unspecified {
+            row.diagnostic.context.scope = vapor_gui_core::DiagnosticScope::Operation;
+        }
+        if self.build.contains(&row) {
             return;
         }
         if self.build.len() < MAX_BUILD_PROBLEMS {
@@ -157,7 +166,7 @@ impl ProblemStore {
                 rows.extend(diagnostics[local_start..local_end].iter().map(|diagnostic| {
                     ProblemRowRef {
                         path: Some(path),
-                        operation: None,
+                        action: None,
                         diagnostic,
                     }
                 }));
@@ -171,14 +180,14 @@ impl ProblemStore {
         let build_end = end.saturating_sub(offset).min(self.build.len());
         rows.extend(self.build[build_start..build_end].iter().map(|row| ProblemRowRef {
             path: row.path.as_ref(),
-            operation: row.operation.as_deref(),
+            action: row.action.as_deref(),
             diagnostic: &row.diagnostic,
         }));
         offset = offset.saturating_add(self.build.len());
         if self.omitted_build_problems > 0 && start <= offset && end > offset {
             rows.push(ProblemRowRef {
                 path: None,
-                operation: None,
+                action: None,
                 diagnostic: &self.omitted_summary,
             });
         }
@@ -209,7 +218,9 @@ mod tests {
                 label: None,
             }),
             related: Vec::new(),
+
             raw_payload: String::new(),
+            context: Default::default(),
         }
     }
 
@@ -302,6 +313,50 @@ pub(super) fn diagnostic_origin_label(origin: vapor_gui_core::DiagnosticOrigin) 
     }
 }
 
+pub(super) fn diagnostic_details(diagnostic: &StructuredDiagnostic) -> String {
+    let mut details = diagnostic.message.clone();
+    let context = &diagnostic.context;
+    let mut context_lines = Vec::new();
+    if let Some(domain) = &context.domain {
+        context_lines.push(format!("Domain: {domain}"));
+    }
+    if context.scope != vapor_gui_core::DiagnosticScope::Unspecified {
+        context_lines.push(format!("Scope: {}", context.scope.label()));
+    }
+    if let Some(workspace) = &context.workspace {
+        context_lines.push(format!("Workspace: {workspace}"));
+    }
+    if let Some(version) = context.document_version {
+        context_lines.push(format!("Document revision: {version}"));
+    }
+    if let Some(semantic_path) = &context.semantic_path {
+        context_lines.push(format!("Semantic object: {semantic_path}"));
+    }
+    if let Some(operation_id) = &context.operation_id {
+        context_lines.push(format!("Operation: {operation_id}"));
+    }
+    if !context_lines.is_empty() {
+        details.push_str("\n\n");
+        details.push_str(&context_lines.join("\n"));
+    }
+    if !diagnostic.related.is_empty() {
+        details.push_str("\n\nRelated locations");
+        for related in &diagnostic.related {
+            details.push_str(&format!(
+                "\n{}:{}:{} {}",
+                related.file,
+                related.start_line,
+                related.start_column,
+                related.label.as_deref().unwrap_or("related")
+            ));
+        }
+    }
+    if !diagnostic.raw_payload.is_empty() {
+        details.push_str(&format!("\n\nRaw diagnostic\n{}", diagnostic.raw_payload));
+    }
+    details
+}
+
 pub(super) fn semantic_source_limit_diagnostic() -> vapor_gui_core::StructuredDiagnostic {
     let message = "Local semantic indexing is paused for files larger than 2 MiB; source editing remains available.";
     vapor_gui_core::StructuredDiagnostic {
@@ -312,6 +367,12 @@ pub(super) fn semantic_source_limit_diagnostic() -> vapor_gui_core::StructuredDi
         rendered: None,
         primary: None,
         related: Vec::new(),
+
         raw_payload: message.to_owned(),
+        context: vapor_gui_core::DiagnosticContext {
+            domain: Some("semantic".to_owned()),
+            scope: vapor_gui_core::DiagnosticScope::Document,
+            ..Default::default()
+        },
     }
 }

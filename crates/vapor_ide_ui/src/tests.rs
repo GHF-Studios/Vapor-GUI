@@ -61,7 +61,9 @@ fn cargo_diagnostics_map_to_workspace_files_and_problem_rows_keep_provenance() {
         rendered: None,
         primary: None,
         related: Vec::new(),
+
         raw_payload: "{}".to_owned(),
+        context: Default::default(),
     };
     store.replace_source_diagnostics(
         PathBuf::from("src/main.rs"),
@@ -76,17 +78,19 @@ fn cargo_diagnostics_map_to_workspace_files_and_problem_rows_keep_provenance() {
         rendered: None,
         primary: None,
         related: Vec::new(),
+
         raw_payload: "{\"reason\":\"compiler-message\"}".to_owned(),
+        context: Default::default(),
     };
     store.begin_build("build-1");
     store.push_build("build-1", ProblemRow {
         path: workspace_diagnostic_path(&root, "src/main.rs", &[PathBuf::from("src/main.rs")]),
-        operation: Some("workspace.test".to_owned()),
+        action: Some("workspace.test".to_owned()),
         diagnostic: build_diagnostic.clone(),
     });
     store.push_build("build-1", ProblemRow {
         path: workspace_diagnostic_path(&root, "src/main.rs", &[PathBuf::from("src/main.rs")]),
-        operation: Some("workspace.test".to_owned()),
+        action: Some("workspace.test".to_owned()),
         diagnostic: build_diagnostic,
     });
     assert_eq!(store.count(), 2, "repeated output should not duplicate a build problem");
@@ -94,12 +98,13 @@ fn cargo_diagnostics_map_to_workspace_files_and_problem_rows_keep_provenance() {
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].diagnostic.origin, vapor_gui_core::DiagnosticOrigin::RustAnalyzer);
     assert_eq!(rows[1].diagnostic.origin, vapor_gui_core::DiagnosticOrigin::Cargo);
-    assert_eq!(rows[1].operation, Some("workspace.test"));
+    assert_eq!(rows[1].action, Some("workspace.test"));
+    assert_eq!(rows[1].diagnostic.context.operation_id.as_deref(), Some("build-1"));
 
     store.begin_build("build-2");
     store.push_build("build-1", ProblemRow {
         path: Some(PathBuf::from("src/main.rs")),
-        operation: Some("workspace.test".to_owned()),
+        action: Some("workspace.test".to_owned()),
         diagnostic: vapor_gui_core::StructuredDiagnostic {
             origin: vapor_gui_core::DiagnosticOrigin::Cargo,
             severity: vapor_gui_core::DiagnosticSeverity::Error,
@@ -108,7 +113,9 @@ fn cargo_diagnostics_map_to_workspace_files_and_problem_rows_keep_provenance() {
             rendered: None,
             primary: None,
             related: Vec::new(),
+
             raw_payload: "{\"reason\":\"compiler-message\"}".to_owned(),
+            context: Default::default(),
         },
     });
     let rows = store.rows();
@@ -131,7 +138,9 @@ fn source_producers_keep_independent_diagnostics_for_one_document() {
         rendered: None,
         primary: None,
         related: Vec::new(),
+
         raw_payload: String::new(),
+        context: Default::default(),
     };
     let vapor = vapor_gui_core::StructuredDiagnostic {
         origin: vapor_gui_core::DiagnosticOrigin::Vapor,
@@ -141,7 +150,9 @@ fn source_producers_keep_independent_diagnostics_for_one_document() {
         rendered: None,
         primary: None,
         related: Vec::new(),
+
         raw_payload: String::new(),
+        context: Default::default(),
     };
 
     store.replace_source_diagnostics(
@@ -178,7 +189,9 @@ fn problem_rows_materialize_only_the_visible_virtualized_range() {
             rendered: None,
             primary: None,
             related: Vec::new(),
+
             raw_payload: String::new(),
+            context: Default::default(),
         })
         .collect();
     store.replace_source_diagnostics(
@@ -191,7 +204,7 @@ fn problem_rows_materialize_only_the_visible_virtualized_range() {
         "build-1",
         ProblemRow {
             path: None,
-            operation: Some("workspace.test".to_owned()),
+            action: Some("workspace.test".to_owned()),
             diagnostic: vapor_gui_core::StructuredDiagnostic {
                 origin: vapor_gui_core::DiagnosticOrigin::Cargo,
                 severity: vapor_gui_core::DiagnosticSeverity::Error,
@@ -200,7 +213,9 @@ fn problem_rows_materialize_only_the_visible_virtualized_range() {
                 rendered: None,
                 primary: None,
                 related: Vec::new(),
+
                 raw_payload: String::new(),
+                context: Default::default(),
             },
         },
     );
@@ -1094,5 +1109,37 @@ fn canonical_rust_item_templates_cover_each_owned_module_kind() {
         Some(CanonicalRustItemKind::RunCondition)
     ));
     assert!(CanonicalRustItemKind::for_document(Path::new("src/lib.rs")).is_none());
+}
+
+#[test]
+fn diagnostic_details_show_typed_context_without_losing_raw_payload() {
+    let diagnostic = vapor_gui_core::StructuredDiagnostic {
+        origin: vapor_gui_core::DiagnosticOrigin::Cargo,
+        severity: vapor_gui_core::DiagnosticSeverity::Warning,
+        code: Some("rust.test".to_owned()),
+        message: "test warning".to_owned(),
+        rendered: None,
+        primary: None,
+        related: Vec::new(),
+        raw_payload: "opaque payload".to_owned(),
+        context: vapor_gui_core::DiagnosticContext {
+            domain: Some("rust".to_owned()),
+            scope: vapor_gui_core::DiagnosticScope::SemanticObject,
+            workspace: Some("/workspace/game".to_owned()),
+            document_version: Some(12),
+            semantic_path: Some("game::Ship::velocity".to_owned()),
+            operation_id: Some("check-4".to_owned()),
+        },
+    };
+
+    let details = super::diagnostics::diagnostic_details(&diagnostic);
+
+    assert!(details.contains("Domain: rust"));
+    assert!(details.contains("Scope: semantic-object"));
+    assert!(details.contains("Workspace: /workspace/game"));
+    assert!(details.contains("Document revision: 12"));
+    assert!(details.contains("Semantic object: game::Ship::velocity"));
+    assert!(details.contains("Operation: check-4"));
+    assert!(details.contains("Raw diagnostic\nopaque payload"));
 }
 

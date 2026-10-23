@@ -3,7 +3,10 @@ use std::path::Path;
 use crate::semantic::{
     SemanticObject, SemanticObjectId, SemanticObjectKind, semantic_range_from_byte_span,
 };
-use crate::{DiagnosticOrigin, DiagnosticSeverity, DiagnosticSpan, StructuredDiagnostic};
+use crate::{
+    DiagnosticContext, DiagnosticOrigin, DiagnosticScope, DiagnosticSeverity, DiagnosticSpan,
+    StructuredDiagnostic,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Token {
@@ -173,7 +176,13 @@ pub fn rhai_structure_diagnostics(document: &Path, source: &str) -> Vec<Structur
             rendered: Some(message.clone()),
             primary: None,
             related: Vec::new(),
+
             raw_payload: "Rhai token limit reached".to_owned(),
+            context: DiagnosticContext {
+                domain: Some("rhai".to_owned()),
+                scope: DiagnosticScope::Document,
+                ..Default::default()
+            },
         }];
     }
     let tokens = lexed.tokens;
@@ -251,7 +260,13 @@ fn structure_diagnostic(
             label: Some("Rhai delimiter".to_owned()),
         }),
         related: Vec::new(),
+
         raw_payload: message,
+        context: DiagnosticContext {
+            domain: Some("rhai".to_owned()),
+            scope: DiagnosticScope::Document,
+            ..Default::default()
+        },
     }
 }
 

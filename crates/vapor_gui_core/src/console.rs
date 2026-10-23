@@ -36,6 +36,8 @@ struct ConsoleViewCache {
     sources: BTreeSet<String>,
     origins: BTreeSet<String>,
     compositions: BTreeSet<String>,
+    domains: BTreeSet<String>,
+    scopes: BTreeSet<String>,
 }
 
 impl ConsoleViewCache {
@@ -45,6 +47,8 @@ impl ConsoleViewCache {
             self.sources.clear();
             self.origins.clear();
             self.compositions.clear();
+            self.domains.clear();
+            self.scopes.clear();
             for record in history.records() {
                 self.sources.insert(record.source.0.clone());
                 for field in &record.fields {
@@ -54,6 +58,12 @@ impl ConsoleViewCache {
                         }
                         "composition" => {
                             self.compositions.insert(field.value.clone());
+                        }
+                        "domain" => {
+                            self.domains.insert(field.value.clone());
+                        }
+                        "scope" => {
+                            self.scopes.insert(field.value.clone());
                         }
                         _ => {}
                     }
@@ -144,6 +154,30 @@ impl ConsolePanelState {
                                     &mut self.filter.composition,
                                     Some(composition.clone()),
                                     composition,
+                                );
+                            }
+                        });
+                    egui::ComboBox::from_id_salt(ui.id().with("console-domain"))
+                        .selected_text(self.filter.domain.as_deref().unwrap_or("All domains"))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.filter.domain, None, "All domains");
+                            for domain in &self.view_cache.domains {
+                                ui.selectable_value(
+                                    &mut self.filter.domain,
+                                    Some(domain.clone()),
+                                    domain,
+                                );
+                            }
+                        });
+                    egui::ComboBox::from_id_salt(ui.id().with("console-scope"))
+                        .selected_text(self.filter.scope.as_deref().unwrap_or("All scopes"))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.filter.scope, None, "All scopes");
+                            for scope in &self.view_cache.scopes {
+                                ui.selectable_value(
+                                    &mut self.filter.scope,
+                                    Some(scope.clone()),
+                                    scope,
                                 );
                             }
                         });
@@ -358,6 +392,7 @@ mod tests {
         cache.refresh(&history, &filter);
         assert!(cache.filtered_indices.is_empty());
         assert!(cache.sources.is_empty());
+        assert!(cache.domains.is_empty());
     }
 
     #[test]
@@ -388,7 +423,16 @@ mod tests {
                     label: None,
                 }),
                 related: Vec::new(),
+
                 raw_payload: r#"{"reason":"compiler-message"}"#.to_owned(),
+                context: vapor_console_core::DiagnosticContext {
+                    domain: Some("rust".to_owned()),
+                    scope: vapor_console_core::DiagnosticScope::Document,
+                    workspace: Some("/workspace/game".to_owned()),
+                    document_version: Some(4),
+                    semantic_path: Some("game::Ship".to_owned()),
+                    operation_id: Some("op-7".to_owned()),
+                },
             }),
             raw_payload: None,
             text: "error[E0425]: cannot find value `ship`".to_owned(),
@@ -401,7 +445,32 @@ mod tests {
         assert_eq!(records[0].level, super::super::ConsoleLevel::Error);
         assert!(records[0].fields.iter().any(|field| field.key == "code" && field.value == "E0425"));
         assert!(records[0].fields.iter().any(|field| field.key == "location" && field.value == "src/main.rs:4:5"));
+        assert!(records[0].fields.iter().any(|field| field.key == "domain" && field.value == "rust"));
+        assert!(records[0].fields.iter().any(|field| field.key == "scope" && field.value == "document"));
+        assert!(records[0].fields.iter().any(|field| field.key == "semantic" && field.value == "game::Ship"));
         assert!(records[0].fields.iter().any(|field| field.key == "raw" && field.value.contains("compiler-message")));
+        let filter = ConsoleFilter { domain: Some("rust".to_owned()), ..Default::default() };
+        assert!(filter.matches(&records[0]));
+
+        let mut history = ConsoleHistory::new(8);
+        history.push(records[0].clone());
+        let filter = ConsoleFilter {
+            domain: Some("rust".to_owned()),
+            scope: Some("document".to_owned()),
+            ..Default::default()
+        };
+        let mut cache = ConsoleViewCache::default();
+        cache.refresh(&history, &filter);
+        assert_eq!(cache.domains.iter().map(String::as_str).collect::<Vec<_>>(), ["rust"]);
+        assert_eq!(cache.scopes.iter().map(String::as_str).collect::<Vec<_>>(), ["document"]);
+        assert_eq!(cache.filtered_indices, [0]);
+
+        let unrelated_scope = ConsoleFilter {
+            scope: Some("semantic-object".to_owned()),
+            ..filter
+        };
+        cache.refresh(&history, &unrelated_scope);
+        assert!(cache.filtered_indices.is_empty());
     }
 
     #[test]
@@ -486,6 +555,24 @@ pub fn records_from_operation_output(
         }
         if let Some(diagnostic) = &output.diagnostic {
             record = record.field("producer", format!("{:?}", diagnostic.origin).to_ascii_lowercase());
+            if let Some(domain) = &diagnostic.context.domain {
+                record = record.field("domain", domain.clone());
+            }
+            if diagnostic.context.scope != vapor_console_core::DiagnosticScope::Unspecified {
+                record = record.field("scope", diagnostic.context.scope.label());
+            }
+            if let Some(workspace) = &diagnostic.context.workspace {
+                record = record.field("workspace", workspace.clone());
+            }
+            if let Some(document_version) = diagnostic.context.document_version {
+                record = record.field("document revision", document_version.to_string());
+            }
+            if let Some(semantic_path) = &diagnostic.context.semantic_path {
+                record = record.field("semantic", semantic_path.clone());
+            }
+            if let Some(operation_id) = &diagnostic.context.operation_id {
+                record = record.field("diagnostic operation", operation_id.clone());
+            }
             if let Some(code) = &diagnostic.code {
                 record = record.field("code", code.clone());
             }

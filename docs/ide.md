@@ -62,6 +62,14 @@ payloads are retained as marked prefixes. Rust symbol and reference queries
 also reject stale open-document snapshots, and the References panel caps its
 visible results while reporting how many were omitted.
 
+Every structured diagnostic also carries producer-independent context:
+semantic domain and scope, workspace identity, optional document revision,
+qualified semantic path, and originating operation ID. Problems hover details
+and the shared Console expose this context; the Console can filter by domain
+and scope. Older protocol records omit the context and default to an
+unspecified scope, so the additive metadata does not require a wire-version
+migration. Raw producer payload remains available in the detail view.
+
 Opening a workspace does not ask Cargo to build it. Rust Analyzer is started
 through the Vapor Client service with automatic checking, build scripts, and
 procedural macros disabled. The IDE's **Format**, **Check**, **Test**, and

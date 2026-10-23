@@ -335,6 +335,8 @@ impl IdeApp {
                     if let (Some(root), Some(diagnostic)) =
                         (self.workspace.root.as_deref(), output.diagnostic)
                     {
+                        let mut diagnostic = diagnostic;
+                        diagnostic.context.workspace = Some(root.to_string_lossy().into_owned());
                         let path = diagnostic
                             .primary
                             .as_ref()
@@ -346,7 +348,7 @@ impl IdeApp {
                             &output.id,
                             ProblemRow {
                                 path,
-                                operation: Some(output.action.clone()),
+                                action: Some(output.action.clone()),
                                 diagnostic,
                             },
                         );

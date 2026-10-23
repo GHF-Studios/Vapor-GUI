@@ -347,6 +347,12 @@ pub(super) fn xml_parse_diagnostic(
             label: Some("XML syntax error".to_owned()),
         }),
         related: Vec::new(),
+
         raw_payload: "XML parser reported invalid structure".to_owned(),
+        context: vapor_gui_core::DiagnosticContext {
+            domain: Some("xml".to_owned()),
+            scope: vapor_gui_core::DiagnosticScope::Document,
+            ..Default::default()
+        },
     }
 }
