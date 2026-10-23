@@ -320,3 +320,33 @@ fn locate_xml_attribute(source: &str, start: usize, end: usize, name: &[u8]) -> 
     }
     None
 }
+
+pub(super) fn xml_parse_diagnostic(
+    path: &Path,
+    source: &str,
+    error: &XmlParseError,
+) -> vapor_gui_core::StructuredDiagnostic {
+    let message = "This XML document could not be parsed. Inspect its syntax near the highlighted file.".to_owned();
+    let mut offset = error.offset.min(source.len());
+    while !source.is_char_boundary(offset) { offset = offset.saturating_sub(1); }
+    let end = source[offset..].chars().next().map_or(offset, |character| offset + character.len_utf8());
+    let range = vapor_gui_core::semantic::semantic_range_from_byte_span(source, offset..end);
+    vapor_gui_core::StructuredDiagnostic {
+        origin: vapor_gui_core::DiagnosticOrigin::Vapor,
+        severity: vapor_gui_core::DiagnosticSeverity::Error,
+        code: Some("vapor.xml.parse".to_owned()),
+        message: message.clone(),
+        rendered: Some(message.clone()),
+        primary: Some(vapor_gui_core::DiagnosticSpan {
+            file: path.to_string_lossy().into_owned(),
+            start_line: range.start.line + 1,
+            start_column: range.start.character + 1,
+            end_line: range.end.line + 1,
+            end_column: range.end.character + 1,
+            primary: true,
+            label: Some("XML syntax error".to_owned()),
+        }),
+        related: Vec::new(),
+        raw_payload: "XML parser reported invalid structure".to_owned(),
+    }
+}

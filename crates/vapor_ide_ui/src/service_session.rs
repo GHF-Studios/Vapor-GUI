@@ -538,3 +538,21 @@ impl IdeApp {
         })
     }
 }
+
+pub(super) fn connect_service(workspace: Option<PathBuf>) -> Result<Client, vapor_client::ClientError> {
+    let application_executable = std::env::current_exe()
+        .map_err(|error| vapor_client::ClientError::Io(error.to_string()))?;
+    let service_path = service_sibling_path(&application_executable);
+    Client::connect_or_start(
+        &service_path,
+        ClientHostConfig {
+            application_executable,
+            workshop_app_id: None,
+            workspace_root: workspace,
+            active_composition_id: None,
+            fixture_mode: false,
+            legacy_storage: Default::default(),
+            state_directory: None,
+        },
+    )
+}

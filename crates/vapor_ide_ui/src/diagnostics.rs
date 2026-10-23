@@ -242,3 +242,76 @@ mod tests {
         assert!(outside.is_empty());
     }
 }
+
+pub(super) fn truncate_diagnostic_payload(payload: &str) -> String {
+    const MAX_BYTES: usize = 64 * 1024;
+    if payload.len() <= MAX_BYTES { return payload.to_owned(); }
+    let mut end = MAX_BYTES;
+    while !payload.is_char_boundary(end) { end -= 1; }
+    format!("{}…", &payload[..end])
+}
+
+pub(super) fn workspace_diagnostic_path(
+    workspace: &Path,
+    diagnostic_file: &str,
+    known_files: &[PathBuf],
+) -> Option<PathBuf> {
+    let workspace = workspace.canonicalize().unwrap_or_else(|_| workspace.to_path_buf());
+    let path = Path::new(diagnostic_file);
+    if diagnostic_file.trim().is_empty() || diagnostic_file.starts_with("file:") {
+        return None;
+    }
+    if path.is_absolute() {
+        let canonical = path.canonicalize().ok()?;
+        return canonical.strip_prefix(&workspace).ok().map(Path::to_path_buf);
+    }
+
+    // Cargo may report a package-relative path when the package is nested in
+    // the workspace. Resolve only a unique suffix match from the IDE's file
+    // snapshot; guessing between duplicate module names would misnavigate.
+    let matches = known_files
+        .iter()
+        .filter(|candidate| candidate.ends_with(path))
+        .take(2)
+        .collect::<Vec<_>>();
+    if matches.len() == 1 {
+        return Some(matches[0].to_path_buf());
+    }
+    if matches.len() > 1 {
+        return None;
+    }
+
+    let canonical = workspace.join(path).canonicalize().ok()?;
+    canonical.strip_prefix(workspace).ok().map(Path::to_path_buf)
+}
+
+pub(super) fn operation_produces_build_diagnostics(action: &str) -> bool {
+    matches!(
+        action.rsplit('.').next(),
+        Some("build" | "check" | "test" | "validate")
+    )
+}
+
+pub(super) fn diagnostic_origin_label(origin: vapor_gui_core::DiagnosticOrigin) -> &'static str {
+    match origin {
+        vapor_gui_core::DiagnosticOrigin::RustAnalyzer => "Rust Analyzer",
+        vapor_gui_core::DiagnosticOrigin::Cargo => "Cargo",
+        vapor_gui_core::DiagnosticOrigin::Rustc => "rustc",
+        vapor_gui_core::DiagnosticOrigin::Rustdoc => "rustdoc",
+        vapor_gui_core::DiagnosticOrigin::Vapor => "Vapor",
+    }
+}
+
+pub(super) fn semantic_source_limit_diagnostic() -> vapor_gui_core::StructuredDiagnostic {
+    let message = "Local semantic indexing is paused for files larger than 2 MiB; source editing remains available.";
+    vapor_gui_core::StructuredDiagnostic {
+        origin: vapor_gui_core::DiagnosticOrigin::Vapor,
+        severity: vapor_gui_core::DiagnosticSeverity::Information,
+        code: Some("vapor.semantic.source-limit".to_owned()),
+        message: message.to_owned(),
+        rendered: None,
+        primary: None,
+        related: Vec::new(),
+        raw_payload: message.to_owned(),
+    }
+}

@@ -1118,3 +1118,20 @@ impl IdeApp {
     }
 
 }
+
+pub(super) fn reference_request_matches_selection(
+    request_path: &Path,
+    semantic_target: Option<&SemanticObjectRef>,
+    requested_cursor_offset: Option<usize>,
+    current_cursor_offset: usize,
+    selected_file: Option<&PathBuf>,
+    selected_semantic: Option<&SemanticObjectRef>,
+) -> bool {
+    semantic_target.map_or_else(
+        || {
+            selected_file.is_some_and(|selected| selected == request_path)
+                && requested_cursor_offset.is_none_or(|offset| offset == current_cursor_offset)
+        },
+        |target| selected_semantic == Some(target),
+    )
+}

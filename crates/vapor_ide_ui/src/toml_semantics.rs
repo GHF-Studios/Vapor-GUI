@@ -1,4 +1,5 @@
 use std::path::Path;
+use super::diagnostics::truncate_diagnostic_payload;
 
 use vapor_gui_core::semantic::{SemanticObject, SemanticObjectId, SemanticObjectKind, semantic_range_from_byte_span};
 
@@ -590,5 +591,37 @@ fn authored_vapor_semantic_attribute(path: &[String]) -> Option<&'static str> {
             )
         }) => Some("Vapor content reference"),
         _ => None,
+    }
+}
+
+pub(super) fn toml_parse_diagnostic(
+    path: &Path,
+    source: &str,
+    error: &toml_edit::TomlError,
+) -> vapor_gui_core::StructuredDiagnostic {
+    let primary = error.span().map(|span| {
+        let range = semantic_range_from_byte_span(source, span);
+        vapor_gui_core::DiagnosticSpan {
+            file: path.to_string_lossy().into_owned(),
+            start_line: range.start.line.saturating_add(1),
+            start_column: range.start.character.saturating_add(1),
+            end_line: range.end.line.saturating_add(1),
+            end_column: range.end.character.saturating_add(1),
+            primary: true,
+            label: Some("TOML syntax error".to_owned()),
+        }
+    });
+    let message = truncate_diagnostic_payload(error.message());
+    vapor_gui_core::StructuredDiagnostic {
+        origin: vapor_gui_core::DiagnosticOrigin::Vapor,
+        severity: vapor_gui_core::DiagnosticSeverity::Error,
+        code: Some("vapor.toml.parse".to_owned()),
+        message: message.clone(),
+        rendered: None,
+        primary,
+        related: Vec::new(),
+        // Keep the machine detail but avoid retaining a formatted TOML parser
+        // error, which may quote source text such as credentials or tokens.
+        raw_payload: message,
     }
 }
