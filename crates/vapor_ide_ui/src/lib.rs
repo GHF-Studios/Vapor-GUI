@@ -11,7 +11,8 @@ use vapor_client::{Client, ClientHostConfig, service_sibling_path};
 use vapor_client_protocol::{
     AuthoringResult, AuthoringResultKind, ClientAction, ClientEvent, LanguageServerAction,
     LanguageServerDiagnostics, OperationStatus, ProtocolFrame, WorkspaceAction,
-    WorkspaceFileResult, WorkspaceProjectSelection, WorkspaceToolOperation,
+    WorkspaceContentSnapshot, WorkspaceFileResult, WorkspaceProjectSelection,
+    WorkspaceSourceProject, WorkspaceToolOperation,
 };
 use vapor_gui_core::semantic::{
     SemanticObject, SemanticObjectRef, SemanticRange, SemanticWorkspaceIndex,
@@ -59,7 +60,8 @@ use lsp_text::{
 use toml_semantics::toml_parse_diagnostic;
 use workspace_navigation::{
     FileTreeView, canonical_rust_item_kind, document_tab_label, draw_file_tree, reference_range,
-    rust_crate_roots, same_existing_workspace_path,
+    rust_crate_roots, same_existing_workspace_path, workspace_content_is_within,
+    workspace_source_manifest,
 };
 #[cfg(test)]
 use workspace_navigation::{
@@ -181,6 +183,7 @@ struct WorkspaceState {
     files: Vec<PathBuf>,
     file_tree: WorkspaceFileTree,
     rust_crate_roots: BTreeSet<PathBuf>,
+    content: WorkspaceContentSnapshot,
     file_query: String,
     focus_file_query: bool,
     project_switcher_open: bool,

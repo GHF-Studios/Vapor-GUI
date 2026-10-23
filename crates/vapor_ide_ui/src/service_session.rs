@@ -336,6 +336,7 @@ impl IdeApp {
                         continue;
                     }
                     if let PendingAction::OpenWorkspace(root) = pending.action.clone() {
+                        self.workspace.content = response.snapshot.workspace_content.clone();
                         self.workspace.root = Some(root.clone());
                         self.workspace.input = root.display().to_string();
                         self.workspace.files.clear();
@@ -380,6 +381,14 @@ impl IdeApp {
                                 diagnostic,
                             },
                         );
+                    }
+                }
+                ProtocolFrame::Event(ClientEvent::Snapshot(snapshot)) => {
+                    if let Some(root) = self.workspace.root.as_deref()
+                        && !snapshot.workspace_content.source_projects.is_empty()
+                        && workspace_content_is_within(root, &snapshot.workspace_content)
+                    {
+                        self.workspace.content = snapshot.workspace_content;
                     }
                 }
                 ProtocolFrame::Event(ClientEvent::OperationChanged(event)) => {

@@ -26,6 +26,7 @@ impl IdeApp {
             let mut related_navigation = None;
             let mut quick_fix_request = None;
             let mut registered_project_requested = false;
+            let mut local_content_reference_requested = false;
             if toml_semantics::is_registered_workspace_project_path(&object.id)
                 && ui
                     .button("Open registered project")
@@ -35,6 +36,20 @@ impl IdeApp {
                     .clicked()
             {
                 registered_project_requested = true;
+            }
+            if object
+                .attributes
+                .iter()
+                .any(|attribute| attribute == "Vapor content reference")
+                && ui
+                    .add_enabled(
+                        self.workspace.pending.is_none(),
+                        egui::Button::new("Open local referenced content"),
+                    )
+                    .on_disabled_hover_text("Wait for the current workspace operation to finish.")
+                    .clicked()
+            {
+                local_content_reference_requested = true;
             }
             if let Some(relative_path) = self
                 .workspace
@@ -251,6 +266,35 @@ impl IdeApp {
                 } else {
                     self.workspace.status =
                         "The registered folder is missing or outside this workspace.".to_owned();
+                }
+            }
+            if local_content_reference_requested {
+                let manifest = self
+                    .editor
+                    .documents
+                    .get(&object.id.document)
+                    .and_then(|document| {
+                        toml_semantics::authored_reference_id(&document.contents, &object.id)
+                    })
+                    .and_then(|id| {
+                        self.workspace
+                            .content
+                            .source_projects
+                            .iter()
+                            .find(|project| project.id == id)
+                    })
+                    .and_then(|project| {
+                        self.workspace
+                            .root
+                            .as_deref()
+                            .and_then(|root| workspace_source_manifest(root, project))
+                    });
+                if let Some(manifest) = manifest {
+                    self.open_file(manifest);
+                } else {
+                    self.workspace.status =
+                        "That reference is not registered as local source in this workspace."
+                            .to_owned();
                 }
             }
             if let Some(member) = selected_member {

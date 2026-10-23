@@ -192,6 +192,44 @@ pub(super) fn is_registered_workspace_project_path(
     registered_project_index(id).is_some()
 }
 
+pub(super) fn authored_reference_id(
+    source: &str,
+    id: &vapor_gui_core::semantic::SemanticObjectId,
+) -> Option<String> {
+    let role = id.domain.strip_prefix("vapor-")?;
+    let fields = id.path.strip_prefix(&[role.to_owned()])?;
+    if !vapor_client_domain::ContentKind::ALL
+        .into_iter()
+        .any(|kind| kind.as_str() == role)
+        || !is_authored_reference_field(fields, "id")
+    {
+        return None;
+    }
+    let document = source.parse::<toml_edit::ImDocument<String>>().ok()?;
+    let content = document.get(role)?;
+    let id = match fields {
+        [relationship, field] if field == "id" => {
+            content.get(relationship)?.get(field)?.as_str()?
+        }
+        [collection, index, field] if field == "id" => content
+            .get(collection)?
+            .as_array_of_tables()?
+            .get(array_index(index)?)?
+            .get(field)?
+            .as_str()?,
+        _ => return None,
+    };
+    Some(id.to_owned())
+}
+
+fn array_index(segment: &str) -> Option<usize> {
+    segment
+        .strip_prefix('[')?
+        .strip_suffix(']')?
+        .parse::<usize>()
+        .ok()
+}
+
 #[derive(Clone, Copy)]
 enum WorkspaceProjectCollection {
     Source,
@@ -757,7 +795,7 @@ pub(super) fn toml_parse_diagnostic(
 #[cfg(test)]
 mod tests {
     use super::{
-        authored_manifest_diagnostics, parse_toml_semantic_objects,
+        authored_manifest_diagnostics, authored_reference_id, parse_toml_semantic_objects,
         registered_workspace_project_path,
     };
     use std::path::Path;
@@ -1122,5 +1160,17 @@ published-file-id = "67890"
             attribute("game.steam.published-file-id"),
             Some("Published Workshop item ID")
         );
+        let reference = find(&objects, "game.engine.id").unwrap();
+        assert_eq!(
+            authored_reference_id(source, &reference.id).as_deref(),
+            Some("ghf-studios/example/engine")
+        );
+        let dependency = find(&objects, "game.dependencies[0].id").unwrap();
+        assert_eq!(
+            authored_reference_id(source, &dependency.id).as_deref(),
+            Some("ghf-studios/example/library")
+        );
+        let identity = find(&objects, "game.id").unwrap();
+        assert!(authored_reference_id(source, &identity.id).is_none());
     }
 }

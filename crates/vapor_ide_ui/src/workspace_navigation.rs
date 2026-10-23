@@ -76,6 +76,32 @@ pub(super) fn same_existing_workspace_path(left: &Path, right: &Path) -> bool {
     )
 }
 
+pub(super) fn workspace_content_is_within(root: &Path, content: &WorkspaceContentSnapshot) -> bool {
+    let Ok(root) = root.canonicalize() else {
+        return false;
+    };
+    content.source_projects.iter().all(|project| {
+        [project.root.as_str(), project.manifest.as_str()]
+            .into_iter()
+            .all(|path| {
+                Path::new(path)
+                    .canonicalize()
+                    .is_ok_and(|path| path.starts_with(&root))
+            })
+    })
+}
+
+pub(super) fn workspace_source_manifest(
+    root: &Path,
+    project: &WorkspaceSourceProject,
+) -> Option<PathBuf> {
+    let manifest = Path::new(&project.manifest);
+    manifest
+        .is_file()
+        .then(|| relative_workspace_path(root, manifest))
+        .flatten()
+}
+
 pub(super) fn file_display_label(path: &Path, all_files: &[PathBuf]) -> String {
     if path.extension().is_some_and(|extension| extension == "rs") {
         shortest_rust_label(path, all_files)
@@ -279,8 +305,11 @@ pub(super) fn document_tab_label(
 
 #[cfg(test)]
 mod tests {
-    use super::same_existing_workspace_path;
+    use super::{
+        same_existing_workspace_path, workspace_content_is_within, workspace_source_manifest,
+    };
     use std::path::Path;
+    use vapor_client_protocol::{WorkspaceContentSnapshot, WorkspaceSourceProject};
 
     #[test]
     fn workspace_identity_requires_both_paths_to_exist() {
@@ -300,6 +329,58 @@ mod tests {
         let alias = root.join(".");
         assert!(same_existing_workspace_path(&root, &alias));
         assert!(same_existing_workspace_path(&root, Path::new(&root)));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_project_manifests_must_exist_inside_the_open_workspace() {
+        let root = std::env::temp_dir().join(format!(
+            "vapor-source-project-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let project_root = root.join("content/demo");
+        let manifest = project_root.join("Game.vapor.toml");
+        std::fs::create_dir_all(&project_root).unwrap();
+        std::fs::write(&manifest, "[game]\n").unwrap();
+        let project = WorkspaceSourceProject {
+            id: "ghf-studios/demo/game".to_owned(),
+            version: Some("0.5.0".to_owned()),
+            kind: "game".to_owned(),
+            root: project_root.display().to_string(),
+            manifest: manifest.display().to_string(),
+            binaries: Vec::new(),
+            libraries: Vec::new(),
+            dependencies: Vec::new(),
+            workshop: Default::default(),
+        };
+        let snapshot = WorkspaceContentSnapshot {
+            source_projects: vec![project.clone()],
+            source_projects_loaded: true,
+            ..Default::default()
+        };
+        assert!(workspace_content_is_within(&root, &snapshot));
+        assert_eq!(
+            workspace_source_manifest(&root, &project).as_deref(),
+            Some(Path::new("content/demo/Game.vapor.toml"))
+        );
+
+        let outside = std::env::temp_dir().join(format!(
+            "vapor-external-game-{}-{}.vapor.toml",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        std::fs::write(&outside, "[game]\n").unwrap();
+        let mut external_project = project;
+        external_project.manifest = outside.display().to_string();
+        let external_snapshot = WorkspaceContentSnapshot {
+            source_projects: vec![external_project.clone()],
+            source_projects_loaded: true,
+            ..Default::default()
+        };
+        assert!(!workspace_content_is_within(&root, &external_snapshot));
+        assert!(workspace_source_manifest(&root, &external_project).is_none());
+        std::fs::remove_file(outside).unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
 }
