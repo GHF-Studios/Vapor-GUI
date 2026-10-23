@@ -1,6 +1,9 @@
 use super::{Document, IdeApp, PendingAction, canonical_rust_item_kind, rust_semantics};
 use eframe::egui;
-use vapor_client_protocol::{ClientAction, WorkspaceAction};
+use vapor_client_domain::ContentKind;
+use vapor_client_protocol::{
+    AuthoringAction, ClientAction, WorkshopMetadataDraft, WorkspaceAction,
+};
 
 #[derive(Default)]
 pub(super) struct WorkspaceAuthoring {
@@ -8,6 +11,11 @@ pub(super) struct WorkspaceAuthoring {
     pub(super) new_file_path: String,
     new_rust_item_dialog: bool,
     new_rust_item_name: String,
+    pub(super) new_content_dialog: bool,
+    new_content_kind: String,
+    new_content_id: String,
+    new_content_version: String,
+    new_content_dependencies: String,
 }
 
 impl IdeApp {
@@ -89,6 +97,47 @@ impl IdeApp {
         self.interface.authoring.new_file_dialog = false;
     }
 
+    pub(super) fn open_vapor_content_dialog(&mut self) {
+        if self.workspace.root.is_none() {
+            self.workspace.status = "Open a Vapor workspace before creating content.".to_owned();
+            return;
+        }
+        self.interface.authoring.new_content_kind = ContentKind::Game.as_str().to_owned();
+        self.interface.authoring.new_content_id.clear();
+        self.interface.authoring.new_content_version = "0.5.0".to_owned();
+        self.interface.authoring.new_content_dependencies.clear();
+        self.interface.authoring.new_content_dialog = true;
+    }
+
+    pub(super) fn create_vapor_content(&mut self) {
+        if self.editor.documents.values().any(Document::is_dirty) {
+            self.workspace.status =
+                "Save open files before Vapor updates the workspace for new content.".to_owned();
+            return;
+        }
+        let Some(root) = self.workspace.root.as_deref() else {
+            self.workspace.status = "Open a Vapor workspace before creating content.".to_owned();
+            return;
+        };
+        let action = match vapor_content_creation_action(
+            root,
+            &self.interface.authoring.new_content_kind,
+            &self.interface.authoring.new_content_id,
+            &self.interface.authoring.new_content_version,
+            &self.interface.authoring.new_content_dependencies,
+        ) {
+            Ok(action) => action,
+            Err(error) => {
+                self.workspace.status = error;
+                return;
+            }
+        };
+        self.send(action, PendingAction::CreateContent);
+        if self.workspace.pending.is_some() {
+            self.interface.authoring.new_content_dialog = false;
+        }
+    }
+
     pub(super) fn draw_authoring_dialogs(&mut self, context: &egui::Context) {
         if self.interface.authoring.new_rust_item_dialog {
             let mut open = true;
@@ -151,5 +200,170 @@ impl IdeApp {
                     });
                 });
         }
+        if self.interface.authoring.new_content_dialog {
+            let mut open = true;
+            let mut create_requested = false;
+            egui::Window::new("New Vapor content")
+                .collapsible(false)
+                .resizable(true)
+                .default_width(420.0)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .open(&mut open)
+                .show(context, |ui| {
+                    ui.label("Vapor creates the canonical source project and registers it in this workspace.");
+                    ui.label("No build runs. Edit the generated manifest and Rust source afterward.");
+                    let selected_kind = self
+                        .interface
+                        .authoring
+                        .new_content_kind
+                        .parse::<ContentKind>()
+                        .unwrap_or(ContentKind::Game);
+                    egui::ComboBox::from_label("Content type")
+                        .selected_text(selected_kind.as_str())
+                        .show_ui(ui, |ui| {
+                            for kind in ContentKind::ALL {
+                                ui.selectable_value(
+                                    &mut self.interface.authoring.new_content_kind,
+                                    kind.as_str().to_owned(),
+                                    kind.as_str(),
+                                );
+                            }
+                        });
+                    ui.label("Vapor ID");
+                    ui.add(
+                        egui::TextEdit::singleline(
+                            &mut self.interface.authoring.new_content_id,
+                        )
+                        .hint_text("workspace-id/new-content")
+                        .desired_width(f32::INFINITY),
+                    );
+                    ui.weak("Use this workspace's Vapor ID prefix, followed by one new name.");
+                    ui.horizontal(|ui| {
+                        ui.label("Version");
+                        ui.add(
+                            egui::TextEdit::singleline(
+                                &mut self.interface.authoring.new_content_version,
+                            )
+                            .hint_text("0.5.0")
+                            .desired_width(120.0),
+                        );
+                    });
+                    ui.label("Required dependencies (one Vapor selector per line; optional).");
+                    ui.add(
+                        egui::TextEdit::multiline(
+                            &mut self.interface.authoring.new_content_dependencies,
+                        )
+                        .desired_rows(3)
+                        .desired_width(f32::INFINITY),
+                    );
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(
+                                self.workspace.pending.is_none(),
+                                egui::Button::new("Create content"),
+                            )
+                            .clicked()
+                        {
+                            create_requested = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.interface.authoring.new_content_dialog = false;
+                        }
+                    });
+                });
+            if !open {
+                self.interface.authoring.new_content_dialog = false;
+            }
+            if create_requested {
+                self.create_vapor_content();
+            }
+        }
+    }
+}
+
+fn vapor_content_creation_action(
+    workspace_root: &std::path::Path,
+    kind: &str,
+    id: &str,
+    version: &str,
+    dependencies: &str,
+) -> Result<ClientAction, String> {
+    let kind = kind
+        .parse::<ContentKind>()
+        .map_err(|_| "Choose one of Vapor's supported content types.".to_owned())?;
+    let id = id.trim();
+    if id.is_empty() {
+        return Err("Enter the new content's full Vapor ID.".to_owned());
+    }
+    let version = version.trim();
+    if version.is_empty() {
+        return Err("Enter a content version.".to_owned());
+    }
+    let dependencies = dependencies
+        .lines()
+        .map(str::trim)
+        .filter(|dependency| !dependency.is_empty())
+        .map(str::to_owned)
+        .collect();
+    Ok(ClientAction::Authoring(AuthoringAction::CreateContent {
+        workspace_root: workspace_root.to_string_lossy().into_owned(),
+        kind: kind.as_str().to_owned(),
+        id: id.to_owned(),
+        version: version.to_owned(),
+        dependencies,
+        optional_dependencies: Vec::new(),
+        workshop: WorkshopMetadataDraft::default(),
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::vapor_content_creation_action;
+    use vapor_client_protocol::{AuthoringAction, ClientAction, WorkshopMetadataDraft};
+
+    #[test]
+    fn vapor_content_creation_uses_typed_role_and_normalizes_dependency_lines() {
+        assert_eq!(
+            vapor_content_creation_action(
+                std::path::Path::new("/workspace"),
+                "game-mod",
+                "ghf-studios/example/bonus-mod",
+                "0.5.0",
+                "\n ghf-studios/example/game@^0.5 \n\n",
+            ),
+            Ok(ClientAction::Authoring(AuthoringAction::CreateContent {
+                workspace_root: "/workspace".to_owned(),
+                kind: "game-mod".to_owned(),
+                id: "ghf-studios/example/bonus-mod".to_owned(),
+                version: "0.5.0".to_owned(),
+                dependencies: vec!["ghf-studios/example/game@^0.5".to_owned()],
+                optional_dependencies: Vec::new(),
+                workshop: WorkshopMetadataDraft::default(),
+            }))
+        );
+    }
+
+    #[test]
+    fn vapor_content_creation_rejects_missing_identity_or_version() {
+        assert!(
+            vapor_content_creation_action(
+                std::path::Path::new("/workspace"),
+                "game",
+                "",
+                "0.5.0",
+                "",
+            )
+            .is_err()
+        );
+        assert!(
+            vapor_content_creation_action(
+                std::path::Path::new("/workspace"),
+                "game",
+                "ghf-studios/example/game",
+                "",
+                "",
+            )
+            .is_err()
+        );
     }
 }

@@ -9,9 +9,9 @@ use std::{
 };
 use vapor_client::{Client, ClientHostConfig, service_sibling_path};
 use vapor_client_protocol::{
-    ClientAction, ClientEvent, LanguageServerAction, LanguageServerDiagnostics, OperationStatus,
-    ProtocolFrame, WorkspaceAction, WorkspaceFileResult, WorkspaceProjectSelection,
-    WorkspaceToolOperation,
+    AuthoringResult, AuthoringResultKind, ClientAction, ClientEvent, LanguageServerAction,
+    LanguageServerDiagnostics, OperationStatus, ProtocolFrame, WorkspaceAction,
+    WorkspaceFileResult, WorkspaceProjectSelection, WorkspaceToolOperation,
 };
 use vapor_gui_core::semantic::{
     SemanticObject, SemanticObjectRef, SemanticRange, SemanticWorkspaceIndex,
@@ -59,7 +59,7 @@ use lsp_text::{
 use toml_semantics::toml_parse_diagnostic;
 use workspace_navigation::{
     FileTreeView, canonical_rust_item_kind, document_tab_label, draw_file_tree, reference_range,
-    rust_crate_roots,
+    rust_crate_roots, same_existing_workspace_path,
 };
 #[cfg(test)]
 use workspace_navigation::{
@@ -144,6 +144,7 @@ enum PendingAction {
     OpenFile,
     SaveFile { path: PathBuf, contents: String },
     CreateFile,
+    CreateContent,
     Tool,
 }
 

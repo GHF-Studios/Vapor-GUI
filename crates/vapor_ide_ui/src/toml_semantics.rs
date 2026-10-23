@@ -103,7 +103,41 @@ pub fn authored_manifest_diagnostics(
         }
     };
     if manifest.content(kind).is_some() {
-        return Vec::new();
+        let Some(other_kind) = ContentKind::ALL
+            .into_iter()
+            .find(|candidate| *candidate != kind && manifest.content(*candidate).is_some())
+        else {
+            return Vec::new();
+        };
+        let primary = authored_manifest_section_span(source, other_kind).map(|span| {
+            let range = semantic_range_from_byte_span(source, span);
+            vapor_gui_core::DiagnosticSpan {
+                file: document.to_string_lossy().into_owned(),
+                start_line: range.start.line.saturating_add(1),
+                start_column: range.start.character.saturating_add(1),
+                end_line: range.end.line.saturating_add(1),
+                end_column: range.end.character.saturating_add(1),
+                primary: true,
+                label: Some("Unexpected content role".to_owned()),
+            }
+        });
+        return vec![vapor_gui_core::StructuredDiagnostic {
+            origin: vapor_gui_core::DiagnosticOrigin::Vapor,
+            severity: vapor_gui_core::DiagnosticSeverity::Error,
+            code: Some("vapor.manifest.multiple-roles".to_owned()),
+            message: format!(
+                "This {kind} manifest also declares [{other_kind}]. Keep each content role in its own manifest."
+            ),
+            rendered: None,
+            primary,
+            related: Vec::new(),
+            raw_payload: format!("unexpected {other_kind} role in {kind} manifest"),
+            context: vapor_gui_core::DiagnosticContext {
+                domain: Some(toml_document_domain(document)),
+                scope: vapor_gui_core::DiagnosticScope::Document,
+                ..Default::default()
+            },
+        }];
     }
     vec![vapor_gui_core::StructuredDiagnostic {
         origin: vapor_gui_core::DiagnosticOrigin::Vapor,
@@ -121,6 +155,14 @@ pub fn authored_manifest_diagnostics(
             ..Default::default()
         },
     }]
+}
+
+fn authored_manifest_section_span(
+    source: &str,
+    kind: vapor_client_domain::ContentKind,
+) -> Option<std::ops::Range<usize>> {
+    let document = source.parse::<toml_edit::ImDocument<String>>().ok()?;
+    document.as_table().get(kind.as_str())?.span()
 }
 
 /// Resolve a registered project path from the authoritative open workspace
@@ -428,7 +470,7 @@ fn toml_semantic_attributes(domain: &str, path: &[String]) -> Vec<String> {
     let attribute = match domain {
         "cargo" => cargo_semantic_attribute(path),
         "vapor-workspace" => workspace_semantic_attribute(path),
-        domain if domain.starts_with("vapor-") => authored_vapor_semantic_attribute(path),
+        domain if domain.starts_with("vapor-") => authored_vapor_semantic_attribute(domain, path),
         _ => None,
     };
     attribute.map(str::to_owned).into_iter().collect()
@@ -553,44 +595,126 @@ fn workspace_semantic_attribute(path: &[String]) -> Option<&'static str> {
     None
 }
 
-fn authored_vapor_semantic_attribute(path: &[String]) -> Option<&'static str> {
-    let name = path.last()?.as_str();
-    let is_content_reference_version = name == "version"
-        && path[..path.len().saturating_sub(1)].iter().any(|segment| {
-            matches!(
-                segment.as_str(),
-                "engine" | "game" | "dependencies" | "extends"
-            )
-        });
-    match name {
-        "schema" => Some("Vapor manifest schema"),
-        "organization" => Some("Identity namespace"),
-        "name" if path.len() == 2 => Some("Declared local identity"),
-        "version" if is_content_reference_version => Some("Vapor version requirement"),
-        "version" => Some("Declared version"),
-        "workshop-id" | "published-file-id" => Some("Workshop item identity"),
-        "app-id" => Some("Steam application identity"),
-        "binaries" => Some("Runtime executable names"),
-        "libraries" => Some("Static Rust library artifacts"),
-        "id" if path.iter().any(|segment| {
-            matches!(
-                segment.as_str(),
-                "engine"
-                    | "game"
-                    | "enginepack"
-                    | "gamepack"
-                    | "modpack"
-                    | "packagepack"
-                    | "engine-mod"
-                    | "game-mod"
-                    | "extension-mod"
-            )
-        }) =>
-        {
-            Some("Vapor content reference")
-        }
-        _ => None,
+fn authored_vapor_semantic_attribute(domain: &str, path: &[String]) -> Option<&'static str> {
+    let content_kind = domain.strip_prefix("vapor-")?;
+    if fields_equal(path, &["schema"]) {
+        return Some("Vapor manifest schema");
     }
+    let (role, fields) = path.split_first()?;
+    if role != content_kind
+        || !vapor_client_domain::ContentKind::ALL
+            .into_iter()
+            .any(|kind| kind.as_str() == content_kind)
+    {
+        return None;
+    }
+
+    if fields.len() == 1 {
+        return match fields[0].as_str() {
+            "id" => Some("Vapor content identity"),
+            "name" => Some("Content display name"),
+            "version" => Some("Declared content version"),
+            "binaries" => Some("Runtime executable names"),
+            "libraries" => Some("Static Rust library artifacts"),
+            "presentation" => Some("Runtime presentation mode"),
+            "runtime" => Some("Runtime payloads"),
+            _ => None,
+        };
+    }
+
+    if fields_equal(fields, &["version", "workspace"]) {
+        return Some("Inherit workspace content version");
+    }
+    if is_authored_reference_field(fields, "id") {
+        return Some("Vapor content reference");
+    }
+    if is_authored_reference_field(fields, "version") {
+        return Some("Vapor version requirement");
+    }
+    if is_authored_reference_field(fields, "workshop-id") {
+        return Some("Workshop acquisition ID");
+    }
+
+    for (field, label) in [
+        ("optional", "Optional content reference"),
+        ("relationship", "Content relationship"),
+        ("reason", "Content reference rationale"),
+    ] {
+        if is_authored_reference_field(fields, field) {
+            if field == "optional" && fields.iter().any(|segment| segment == "dependencies") {
+                return Some("Optional dependency");
+            }
+            if field == "optional" && fields.iter().any(|segment| segment == "conflicts") {
+                return Some("Optional conflict");
+            }
+            if field == "reason" && fields.iter().any(|segment| segment == "dependencies") {
+                return Some("Dependency explanation");
+            }
+            if field == "reason" && fields.iter().any(|segment| segment == "conflicts") {
+                return Some("Conflict explanation");
+            }
+            return Some(label);
+        }
+    }
+    if fields_equal(fields, &["steam", "app-id"]) {
+        return Some("Steam application ID");
+    }
+    if fields_equal(fields, &["steam", "published-file-id"]) {
+        return Some("Published Workshop item ID");
+    }
+    if fields_equal(fields, &["steam", "visibility"]) {
+        return Some("Workshop visibility");
+    }
+    if fields.len() == 2
+        && matches!(
+            fields[0].as_str(),
+            "engine" | "enginepack" | "game" | "gamepack"
+        )
+        && fields[1] == "version"
+    {
+        return Some("Vapor version requirement");
+    }
+    if fields.len() == 2
+        && fields[0] == "steam"
+        && matches!(
+            fields[1].as_str(),
+            "title" | "description" | "tags" | "change-note"
+        )
+    {
+        return Some("Workshop publication metadata");
+    }
+    None
+}
+
+fn is_authored_reference_field(fields: &[String], field: &str) -> bool {
+    match fields {
+        [role, name] if name == field => {
+            matches!(role.as_str(), "engine" | "enginepack" | "game" | "gamepack")
+        }
+        [collection, index, name]
+            if matches!(collection.as_str(), "dependencies" | "conflicts")
+                && name == field
+                && is_array_index(index) =>
+        {
+            matches!(collection.as_str(), "dependencies" | "conflicts")
+        }
+        _ => false,
+    }
+}
+
+fn fields_equal(fields: &[String], expected: &[&str]) -> bool {
+    fields.len() == expected.len()
+        && fields
+            .iter()
+            .zip(expected)
+            .all(|(actual, expected)| actual == expected)
+}
+
+fn is_array_index(segment: &str) -> bool {
+    segment
+        .strip_prefix('[')
+        .and_then(|index| index.strip_suffix(']'))
+        .is_some_and(|index| index.parse::<usize>().is_ok())
 }
 
 pub(super) fn toml_parse_diagnostic(
@@ -686,19 +810,19 @@ visibility = "public"
             find(&objects, "packagepack.engine.workshop-id")
                 .unwrap()
                 .attributes
-                .contains(&"Workshop item identity".to_owned())
+                .contains(&"Workshop acquisition ID".to_owned())
         );
         assert!(
             find(&objects, "packagepack.steam.published-file-id")
                 .unwrap()
                 .attributes
-                .contains(&"Workshop item identity".to_owned())
+                .contains(&"Published Workshop item ID".to_owned())
         );
         assert!(
             find(&objects, "packagepack.steam.app-id")
                 .unwrap()
                 .attributes
-                .contains(&"Steam application identity".to_owned())
+                .contains(&"Steam application ID".to_owned())
         );
         assert!(
             find(&objects, "packagepack.binaries")
@@ -919,5 +1043,84 @@ path = "content/sample-game"
             "[packagepack]\nname = \"demo\"\nversion.workspace = true\n",
         );
         assert!(valid.is_empty());
+
+        let multiple_roles = authored_manifest_diagnostics(
+            Path::new("Packagepack.vapor.toml"),
+            "[packagepack]\nname = \"demo\"\n[game]\nname = \"other\"\n",
+        );
+        assert_eq!(multiple_roles.len(), 1);
+        assert_eq!(
+            multiple_roles[0].code.as_deref(),
+            Some("vapor.manifest.multiple-roles")
+        );
+        assert!(multiple_roles[0].primary.is_some());
+    }
+
+    #[test]
+    fn authored_content_fields_distinguish_identity_versions_and_reference_roles() {
+        let source = r#"
+schema = 1
+
+[game]
+id = "ghf-studios/example/game"
+name = "example-game"
+version.workspace = true
+libraries = ["example-game"]
+
+[game.engine]
+id = "ghf-studios/example/engine"
+version = "^0.5"
+workshop-id = "12345"
+
+[[game.dependencies]]
+id = "ghf-studios/example/library"
+relationship = "requires"
+optional = true
+version = "^0.5"
+reason = "shared rules"
+
+[game.steam]
+app-id = 2122620
+published-file-id = "67890"
+"#;
+        let objects = parse_toml_semantic_objects(Path::new("Game.vapor.toml"), source)
+            .expect("valid authored game manifest");
+        let attribute = |path: &str| {
+            find(&objects, path)
+                .unwrap_or_else(|| panic!("missing {path}"))
+                .attributes
+                .first()
+                .map(String::as_str)
+        };
+
+        assert_eq!(attribute("schema"), Some("Vapor manifest schema"));
+        assert_eq!(attribute("game.id"), Some("Vapor content identity"));
+        assert_eq!(attribute("game.version"), Some("Declared content version"));
+        assert_eq!(attribute("game.engine.id"), Some("Vapor content reference"));
+        assert_eq!(
+            attribute("game.engine.version"),
+            Some("Vapor version requirement")
+        );
+        assert_eq!(
+            attribute("game.engine.workshop-id"),
+            Some("Workshop acquisition ID")
+        );
+        assert_eq!(
+            attribute("game.dependencies[0].id"),
+            Some("Vapor content reference")
+        );
+        assert_eq!(
+            attribute("game.dependencies[0].optional"),
+            Some("Optional dependency")
+        );
+        assert_eq!(
+            attribute("game.dependencies[0].reason"),
+            Some("Dependency explanation")
+        );
+        assert_eq!(attribute("game.steam.app-id"), Some("Steam application ID"));
+        assert_eq!(
+            attribute("game.steam.published-file-id"),
+            Some("Published Workshop item ID")
+        );
     }
 }

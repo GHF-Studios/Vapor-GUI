@@ -1014,7 +1014,7 @@ fn vapor_manifest_objects_explain_identity_and_content_references() {
         .iter()
         .find(|child| child.name == "name")
         .unwrap();
-    assert_eq!(name.attributes, ["Declared local identity"]);
+    assert_eq!(name.attributes, ["Content display name"]);
     let game = pack
         .children
         .iter()

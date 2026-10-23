@@ -6,6 +6,7 @@ impl IdeApp {
         let mut run_project = false;
         let mut create_file = false;
         let mut create_rust_item = false;
+        let mut create_vapor_content = false;
         let mut open_project = false;
         let mut save_requested = false;
         let mut save_all_requested = false;
@@ -38,6 +39,21 @@ impl IdeApp {
                     .clicked()
                 {
                     create_file = true;
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(
+                        self.workspace.root.is_some()
+                            && self.workspace.pending.is_none()
+                            && !has_unsaved_edits,
+                        egui::Button::new("New Vapor content…"),
+                    )
+                    .on_disabled_hover_text(
+                        "Save open files and open a workspace before creating content.",
+                    )
+                    .clicked()
+                {
+                    create_vapor_content = true;
                     ui.close();
                 }
                 let canonical_module_open =
@@ -241,6 +257,9 @@ impl IdeApp {
         }
         if create_rust_item {
             self.open_semantic_rust_item_dialog();
+        }
+        if create_vapor_content {
+            self.open_vapor_content_dialog();
         }
         ui.separator();
     }

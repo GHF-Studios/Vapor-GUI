@@ -329,6 +329,9 @@ impl IdeApp {
                         if matches!(pending.action, PendingAction::CreateFile) {
                             self.interface.authoring.new_file_dialog = true;
                         }
+                        if matches!(pending.action, PendingAction::CreateContent) {
+                            self.interface.authoring.new_content_dialog = true;
+                        }
                         self.workspace.pending = None;
                         continue;
                     }
@@ -404,12 +407,18 @@ impl IdeApp {
                                 if matches!(pending.action, PendingAction::SaveFile { .. }) {
                                     self.editor.save_queue.clear();
                                 }
+                                if matches!(pending.action, PendingAction::CreateContent) {
+                                    self.interface.authoring.new_content_dialog = true;
+                                }
                                 self.workspace.pending = None;
                             }
                             OperationStatus::Cancelled => {
                                 self.workspace.status = "Operation cancelled.".to_owned();
                                 if matches!(pending.action, PendingAction::SaveFile { .. }) {
                                     self.editor.save_queue.clear();
+                                }
+                                if matches!(pending.action, PendingAction::CreateContent) {
+                                    self.interface.authoring.new_content_dialog = true;
                                 }
                                 self.workspace.pending = None;
                             }
@@ -419,6 +428,9 @@ impl IdeApp {
                 }
                 ProtocolFrame::Event(ClientEvent::WorkspaceFileResult(result)) => {
                     self.apply_file_result(*result);
+                }
+                ProtocolFrame::Event(ClientEvent::AuthoringResult(result)) => {
+                    self.apply_authoring_result(*result);
                 }
                 ProtocolFrame::Event(ClientEvent::LanguageServerMessage(message)) => {
                     self.handle_language_server_message(message);
@@ -554,6 +566,72 @@ impl IdeApp {
         }
     }
 
+    pub(super) fn apply_authoring_result(&mut self, result: AuthoringResult) {
+        let matches_pending = self.workspace.pending.as_ref().is_some_and(|pending| {
+            pending.operation_id.as_deref() == Some(result.operation_id.as_str())
+                && matches!(pending.action, PendingAction::CreateContent)
+        });
+        if !matches_pending {
+            return;
+        }
+        let AuthoringResultKind::ContentCreated {
+            workspace_root,
+            manifest,
+            files,
+            ..
+        } = result.result
+        else {
+            return;
+        };
+        let Some(root) = self.workspace.root.as_deref() else {
+            self.workspace.pending = None;
+            self.interface.authoring.new_content_dialog = true;
+            self.workspace.status =
+                "The workspace closed before content creation completed.".to_owned();
+            return;
+        };
+        let same_workspace = same_existing_workspace_path(root, Path::new(&workspace_root));
+        if !same_workspace {
+            self.workspace.pending = None;
+            self.interface.authoring.new_content_dialog = true;
+            self.workspace.status =
+                "Vapor created content in a different workspace; reopen it before continuing."
+                    .to_owned();
+            return;
+        }
+        let manifest = PathBuf::from(manifest);
+        if !is_workspace_relative_file(&manifest) {
+            self.workspace.pending = None;
+            self.interface.authoring.new_content_dialog = true;
+            self.workspace.status = "Vapor returned an invalid content manifest path.".to_owned();
+            return;
+        }
+        let Some(manifest) = relative_workspace_path(root, &manifest) else {
+            self.workspace.pending = None;
+            self.interface.authoring.new_content_dialog = true;
+            self.workspace.status =
+                "The created content manifest is outside the open workspace.".to_owned();
+            return;
+        };
+        let mut files = files
+            .into_iter()
+            .map(PathBuf::from)
+            .filter(|path| is_workspace_relative_file(path))
+            .collect::<Vec<_>>();
+        if !files.contains(&manifest) {
+            files.push(manifest.clone());
+        }
+        files.sort();
+        files.dedup();
+        self.workspace.files = files;
+        self.workspace.file_tree = WorkspaceFileTree::new(&self.workspace.files);
+        self.workspace.rust_crate_roots = rust_crate_roots(&self.workspace.files);
+        self.workspace.pending = None;
+        self.interface.authoring.new_content_dialog = false;
+        self.workspace.status = format!("Created Vapor content; opening {}.", manifest.display());
+        self.open_file(manifest);
+    }
+
     pub(super) fn pending_matches(&self, operation_id: &str) -> bool {
         self.workspace
             .pending
@@ -567,6 +645,13 @@ impl IdeApp {
                 && matches!(&pending.action, PendingAction::SaveFile { path: expected, .. } if expected.as_path() == Path::new(path))
         })
     }
+}
+
+fn is_workspace_relative_file(path: &Path) -> bool {
+    !path.is_absolute()
+        && path
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
 }
 
 pub(super) fn connect_service(

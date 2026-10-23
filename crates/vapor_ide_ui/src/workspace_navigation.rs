@@ -69,6 +69,13 @@ pub(super) fn reference_range(
         .map(|object| object.selection_range)
 }
 
+pub(super) fn same_existing_workspace_path(left: &Path, right: &Path) -> bool {
+    matches!(
+        (left.canonicalize(), right.canonicalize()),
+        (Ok(left), Ok(right)) if left == right
+    )
+}
+
 pub(super) fn file_display_label(path: &Path, all_files: &[PathBuf]) -> String {
     if path.extension().is_some_and(|extension| extension == "rs") {
         shortest_rust_label(path, all_files)
@@ -268,4 +275,31 @@ pub(super) fn document_tab_label(
         }
     }
     path.display().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::same_existing_workspace_path;
+    use std::path::Path;
+
+    #[test]
+    fn workspace_identity_requires_both_paths_to_exist() {
+        let missing = std::env::temp_dir().join(format!(
+            "vapor-missing-workspace-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        assert!(!same_existing_workspace_path(&missing, &missing));
+    }
+
+    #[test]
+    fn workspace_identity_matches_canonical_existing_paths() {
+        let root =
+            std::env::temp_dir().join(format!("vapor-workspace-identity-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let alias = root.join(".");
+        assert!(same_existing_workspace_path(&root, &alias));
+        assert!(same_existing_workspace_path(&root, Path::new(&root)));
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
