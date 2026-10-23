@@ -4,8 +4,8 @@ impl IdeApp {
     pub(super) fn draw_inspector(&mut self, ui: &mut egui::Ui) {
         ui.heading("Inspector");
         ui.separator();
-        if let Some(reference) = self.selected_semantic.clone()
-            && let Some(object) = self.semantic_index.resolve(&reference).cloned()
+        if let Some(reference) = self.semantic.selected.clone()
+            && let Some(object) = self.semantic.index.resolve(&reference).cloned()
         {
             ui.strong(object.kind.label());
             ui.heading(&object.name);
@@ -19,10 +19,10 @@ impl IdeApp {
                 ui.colored_label(egui::Color32::LIGHT_BLUE, status);
             }
             let mut diagnostic_navigation = None;
-            if let Some(relative_path) = self.workspace.as_deref().and_then(|root| {
+            if let Some(relative_path) = self.workspace.root.as_deref().and_then(|root| {
                 relative_workspace_path(root, &object.id.document)
             }) {
-                let diagnostics = self.problems.for_semantic_range(&relative_path, object.range);
+                let diagnostics = self.semantic.problems.for_semantic_range(&relative_path, object.range);
                 if !diagnostics.is_empty() {
                     ui.add_space(8.0);
                     ui.strong(format!("Problems · {}", diagnostics.len()));
@@ -68,13 +68,13 @@ impl IdeApp {
                     ui,
                     &object.children,
                     reference.document_version,
-                    self.selected_semantic.as_ref(),
+                    self.semantic.selected.as_ref(),
                     &mut selected_member,
                 );
             }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                let can_rename = self.language_server_ready
+                let can_rename = self.language_server.ready
                     && object.id.domain == "rust"
                     && object.id.document.extension().is_some_and(|extension| extension == "rs");
                 if ui
@@ -82,8 +82,8 @@ impl IdeApp {
                     .on_hover_text("Preview a Rust Analyzer rename across open workspace files")
                     .clicked()
                 {
-                    self.rename_target = Some(reference.clone());
-                    self.rename_input.clone_from(&object.name);
+                    self.semantic.rename_target = Some(reference.clone());
+                    self.semantic.rename_input.clone_from(&object.name);
                 }
                 if ui.button("Go to declaration").clicked() {
                     self.navigate_to_workspace_location(
@@ -92,8 +92,8 @@ impl IdeApp {
                         object.selection_range.start.character as usize,
                     );
                 }
-                let can_query_references = self.language_server_ready
-                    && self.documents.contains_key(&object.id.document)
+                let can_query_references = self.language_server.ready
+                    && self.editor.documents.contains_key(&object.id.document)
                     && object.id.document.extension().is_some_and(|extension| extension == "rs");
                 if ui
                     .add_enabled(can_query_references, egui::Button::new("Find references"))
@@ -112,11 +112,11 @@ impl IdeApp {
                     );
                 }
             });
-            if self.rename_target.as_ref() == Some(&reference) {
+            if self.semantic.rename_target.as_ref() == Some(&reference) {
                 let mut submit_rename = false;
                 ui.horizontal(|ui| {
                     ui.add(
-                        egui::TextEdit::singleline(&mut self.rename_input)
+                        egui::TextEdit::singleline(&mut self.semantic.rename_input)
                             .hint_text("New Rust identifier")
                             .desired_width(150.0),
                     );
@@ -124,11 +124,11 @@ impl IdeApp {
                         submit_rename = true;
                     }
                     if ui.small_button("Cancel").clicked() {
-                        self.rename_target = None;
+                        self.semantic.rename_target = None;
                     }
                 });
                 if submit_rename {
-                    let new_name = self.rename_input.clone();
+                    let new_name = self.semantic.rename_input.clone();
                     self.request_lsp_rename(reference.clone(), &new_name);
                 }
             }
@@ -136,13 +136,13 @@ impl IdeApp {
                 self.navigate_to_workspace_location(&path, line, character);
             }
             if let Some(member) = selected_member {
-                if self.selected_semantic.as_ref() != Some(&member) {
-                    self.references.clear();
-                    self.references_omitted = 0;
-                    self.rename_target = None;
+                if self.semantic.selected.as_ref() != Some(&member) {
+                    self.language_server.references.clear();
+                    self.language_server.references_omitted = 0;
+                    self.semantic.rename_target = None;
                 }
-                self.selected_semantic = Some(member.clone());
-                if let Some(range) = reference_range(&self.semantic_index, &member) {
+                self.semantic.selected = Some(member.clone());
+                if let Some(range) = reference_range(&self.semantic.index, &member) {
                     self.navigate_to_workspace_location(
                         &member.id.document,
                         range.start.line as usize,
@@ -152,37 +152,37 @@ impl IdeApp {
             }
             ui.separator();
         }
-        if let Some(path) = &self.selected_file {
+        if let Some(path) = &self.editor.selected_file {
             ui.label("File");
             ui.monospace(path.display().to_string());
             ui.add_space(12.0);
             ui.label("Workspace");
-            if let Some(root) = &self.workspace {
+            if let Some(root) = &self.workspace.root {
                 ui.monospace(root.display().to_string());
             }
             ui.add_space(12.0);
             ui.label("Language tooling");
-            ui.label(&self.language_server_status);
+            ui.label(&self.language_server.status);
             ui.label("Rust Analyzer runs through the shared Vapor service and pinned toolchain.");
-            ui.label(format!("{} workspace problems", self.problems.count()));
-            if let Some(hover) = &self.hover {
+            ui.label(format!("{} workspace problems", self.semantic.problems.count()));
+            if let Some(hover) = &self.language_server.hover {
                 ui.add_space(8.0);
                 ui.label("Hover");
                 ui.monospace(hover);
             }
-            if !self.references.is_empty() {
+            if !self.language_server.references.is_empty() {
                 ui.add_space(8.0);
-                ui.label(if self.references_omitted == 0 {
-                    format!("References | {}", self.references.len())
+                ui.label(if self.language_server.references_omitted == 0 {
+                    format!("References | {}", self.language_server.references.len())
                 } else {
-                    format!("References | {} shown · {} omitted", self.references.len(), self.references_omitted)
+                    format!("References | {} shown · {} omitted", self.language_server.references.len(), self.language_server.references_omitted)
                 });
                 let mut selected_reference = None;
                 egui::ScrollArea::vertical()
                     .id_salt("ide-references")
                     .max_height(180.0)
                     .show(ui, |ui| {
-                        for location in &self.references {
+                        for location in &self.language_server.references {
                             if ui
                                 .selectable_label(
                                     false,

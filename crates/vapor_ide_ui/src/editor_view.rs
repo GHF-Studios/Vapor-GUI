@@ -3,14 +3,14 @@ use super::*;
 impl IdeApp {
     pub(super) fn draw_editor(&mut self, ui: &mut egui::Ui) {
         let context = ui.ctx().clone();
-        let open_documents = self.documents.keys().cloned().collect::<Vec<_>>();
+        let open_documents = self.editor.documents.keys().cloned().collect::<Vec<_>>();
         let mut close_document = None;
         if !open_documents.is_empty() {
             ui.horizontal_wrapped(|ui| {
                 for path in open_documents {
-                    let label = document_tab_label(&path, &self.documents);
-                    let dirty = self.documents.get(&path).is_some_and(Document::is_dirty);
-                    let selected = self.selected_file.as_ref() == Some(&path);
+                    let label = document_tab_label(&path, &self.editor.documents);
+                    let dirty = self.editor.documents.get(&path).is_some_and(Document::is_dirty);
+                    let selected = self.editor.selected_file.as_ref() == Some(&path);
                     if ui
                         .selectable_label(
                             selected,
@@ -18,10 +18,10 @@ impl IdeApp {
                         )
                         .clicked()
                     {
-                        self.selected_file = Some(path.clone());
+                        self.editor.selected_file = Some(path.clone());
                     }
                     if ui
-                        .add_enabled(!dirty && self.pending.is_none(), egui::Button::new("Close"))
+                        .add_enabled(!dirty && self.workspace.pending.is_none(), egui::Button::new("Close"))
                         .on_hover_text(if dirty {
                             "Save this file before closing it."
                         } else {
@@ -38,7 +38,7 @@ impl IdeApp {
         if let Some(path) = close_document {
             self.close_document(&path);
         }
-        let Some(path) = self.selected_file.clone() else {
+        let Some(path) = self.editor.selected_file.clone() else {
             ui.vertical_centered(|ui| {
                 ui.add_space(ui.available_height() * 0.32);
                 ui.heading("Open a Rust workspace");
@@ -48,25 +48,23 @@ impl IdeApp {
             });
             return;
         };
-        if !self.documents.contains_key(&path) {
+        if !self.editor.documents.contains_key(&path) {
             ui.label("Opening file...");
             return;
         }
-        if self
-            .pending_navigation
+        if self.editor.pending_navigation
             .as_ref()
             .is_some_and(|(target, _, _)| target == &path)
-            && let Some((_, line, character)) = self.pending_navigation.take()
-            && let Some(document) = self.documents.get(&path)
+            && let Some((_, line, character)) = self.editor.pending_navigation.take()
+            && let Some(document) = self.editor.documents.get(&path)
         {
             if let Some(offset) = position_to_byte_offset(&document.contents, line, character) {
-                let semantic_range = self
-                    .selected_semantic
+                let semantic_range = self.semantic.selected
                     .as_ref()
                     .filter(|reference| reference.id.document == path)
                     .and_then(|reference| {
                         semantic_object_byte_range(
-                            &self.semantic_index,
+                            &self.semantic.index,
                             reference,
                             &document.contents,
                         )
@@ -78,31 +76,31 @@ impl IdeApp {
                     semantic_range.unwrap_or(offset..offset),
                 );
             } else {
-                self.status = "The language server returned an invalid source position.".to_owned();
+                self.workspace.status = "The language server returned an invalid source position.".to_owned();
             }
         }
-        let mut find_action = self.find_navigation.take();
+        let mut find_action = self.editor.find_navigation.take();
         let mut close_find = false;
-        if self.find_open {
+        if self.editor.find_open {
             let mut query_changed = false;
             ui.horizontal(|ui| {
                 ui.label("Find");
                 let query = ui.add(
-                    egui::TextEdit::singleline(&mut self.find_query)
+                    egui::TextEdit::singleline(&mut self.editor.find_query)
                         .hint_text("Find in this file")
                         .desired_width(240.0),
                 );
-                if self.focus_find_query {
+                if self.editor.focus_find_query {
                     query.request_focus();
-                    self.focus_find_query = false;
+                    self.editor.focus_find_query = false;
                 }
                 query_changed = query.changed();
-                let count = self.documents.get(&path).map_or(0, |document| {
-                    find_matches(&document.contents, &self.find_query).len()
+                let count = self.editor.documents.get(&path).map_or(0, |document| {
+                    find_matches(&document.contents, &self.editor.find_query).len()
                 });
-                let match_status = match (self.find_match_index, count) {
+                let match_status = match (self.editor.find_match_index, count) {
                     (Some(index), count) if count > 0 => format!("{} / {count}", index + 1),
-                    (_, 0) if self.find_query.is_empty() => String::new(),
+                    (_, 0) if self.editor.find_query.is_empty() => String::new(),
                     (_, 0) => "No matches".to_owned(),
                     _ => format!("{count} matches"),
                 };
@@ -131,31 +129,30 @@ impl IdeApp {
                 }
             });
             if query_changed {
-                self.find_match_index = None;
+                self.editor.find_match_index = None;
             }
             if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
                 close_find = true;
             }
         }
         if close_find {
-            self.find_open = false;
-            self.find_match_index = None;
+            self.editor.find_open = false;
+            self.editor.find_match_index = None;
         }
         if let Some(previous) = find_action {
-            let source = self
-                .documents
+            let source = self.editor.documents
                 .get(&path)
                 .map(|document| document.contents.as_str())
                 .unwrap_or_default();
-            let matches = find_matches(source, &self.find_query);
+            let matches = find_matches(source, &self.editor.find_query);
             if !matches.is_empty() {
-                let index = match (self.find_match_index, previous) {
+                let index = match (self.editor.find_match_index, previous) {
                     (Some(index), true) => index.checked_sub(1).unwrap_or(matches.len() - 1),
                     (Some(index), false) => (index + 1) % matches.len(),
                     (None, true) => matches.len() - 1,
                     (None, false) => 0,
                 };
-                self.find_match_index = Some(index);
+                self.editor.find_match_index = Some(index);
                 vapor_gui_core::code_editor::select_range(
                     &context,
                     &path,
@@ -163,10 +160,10 @@ impl IdeApp {
                     matches[index].clone(),
                 );
             } else {
-                self.find_match_index = None;
+                self.editor.find_match_index = None;
             }
         }
-        let Some(document) = self.documents.get(&path) else {
+        let Some(document) = self.editor.documents.get(&path) else {
             return;
         };
         let mut request_definition = false;
@@ -182,31 +179,31 @@ impl IdeApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.weak(format!(
                     "Ln {}, Col {}",
-                    self.cursor_position.0, self.cursor_position.1
+                    self.editor.cursor_position.0, self.editor.cursor_position.1
                 ));
-                ui.weak(&self.language_server_status);
+                ui.weak(&self.language_server.status);
                 if ui
-                    .add_enabled(self.language_server_ready, egui::Button::new("Hover"))
+                    .add_enabled(self.language_server.ready, egui::Button::new("Hover"))
                     .clicked()
                 {
                     request_hover = true;
                 }
                 if ui
-                    .add_enabled(self.language_server_ready, egui::Button::new("Definition"))
+                    .add_enabled(self.language_server.ready, egui::Button::new("Definition"))
                     .on_hover_text("Go to Definition | F12")
                     .clicked()
                 {
                     request_definition = true;
                 }
                 if ui
-                    .add_enabled(self.language_server_ready, egui::Button::new("References"))
+                    .add_enabled(self.language_server.ready, egui::Button::new("References"))
                     .on_hover_text("Find references to the symbol under the cursor")
                     .clicked()
                 {
                     request_references = true;
                 }
                 if ui
-                    .add_enabled(self.language_server_ready, egui::Button::new("Format"))
+                    .add_enabled(self.language_server.ready, egui::Button::new("Format"))
                     .on_hover_text("Format this Rust file with the pinned Rust Analyzer")
                     .clicked()
                 {
@@ -227,7 +224,7 @@ impl IdeApp {
         if request_formatting {
             self.request_lsp_formatting(&path);
         }
-        let Some(document) = self.documents.get_mut(&path) else {
+        let Some(document) = self.editor.documents.get_mut(&path) else {
             return;
         };
         let (cursor, changed_document) = {
@@ -246,15 +243,15 @@ impl IdeApp {
             (output.cursor, changed_document)
         };
         if let Some(cursor) = cursor {
-            self.cursor_offset = cursor.primary.index.into();
-            self.cursor_position = cursor_position(&document.contents, self.cursor_offset);
+            self.editor.cursor_offset = cursor.primary.index.into();
+            self.editor.cursor_position = cursor_position(&document.contents, self.editor.cursor_offset);
         }
         if let Some((contents, version)) = changed_document {
-            self.completion_items.clear();
-            self.hover = None;
+            self.language_server.completion_items.clear();
+            self.language_server.hover = None;
             self.did_change_document(&path, contents, version);
         }
-        if !self.completion_items.is_empty() {
+        if !self.language_server.completion_items.is_empty() {
             let mut selected_completion = None;
             ui.separator();
             ui.strong("Completions");
@@ -262,7 +259,7 @@ impl IdeApp {
                 .id_salt("ide-completions")
                 .max_height(120.0)
                 .show(ui, |ui| {
-                    for (index, item) in self.completion_items.iter().enumerate() {
+                    for (index, item) in self.language_server.completion_items.iter().enumerate() {
                         let response = ui.selectable_label(false, &item.label);
                         if let Some(detail) = &item.detail {
                             response.clone().on_hover_text(detail);

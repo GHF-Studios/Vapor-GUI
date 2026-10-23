@@ -2,32 +2,32 @@ use super::*;
 
 impl IdeApp {
     pub(super) fn draw_bottom(&mut self, ui: &mut egui::Ui) {
-        let diagnostic_count = self.problems.count();
+        let diagnostic_count = self.semantic.problems.count();
         ui.horizontal(|ui| {
             if ui
                 .selectable_label(
-                    !self.bottom_console_active,
+                    !self.interface.bottom_console_active,
                     format!("Problems ({diagnostic_count})"),
                 )
                 .clicked()
             {
-                self.bottom_console_active = false;
+                self.interface.bottom_console_active = false;
             }
             if ui
-                .selectable_label(self.bottom_console_active, "Console")
+                .selectable_label(self.interface.bottom_console_active, "Console")
                 .clicked()
             {
-                self.bottom_console_active = true;
+                self.interface.bottom_console_active = true;
             }
             ui.separator();
-            ui.weak(&self.language_server_status);
+            ui.weak(&self.language_server.status);
         });
         ui.separator();
-        if self.bottom_console_active {
-            if self.console.history.is_empty() {
+        if self.interface.bottom_console_active {
+            if self.interface.console.history.is_empty() {
                 ui.weak("Managed commands and toolchain output appear here.");
             }
-            if let Some(command) = self.console.show(ui, true) {
+            if let Some(command) = self.interface.console.show(ui, true) {
                 self.submit_console_command(&command);
             }
         } else {
@@ -40,7 +40,7 @@ impl IdeApp {
                 .auto_shrink([false, false])
                 .show_rows(ui, row_height, diagnostic_count, |ui, visible_rows| {
                     for ProblemRowRef { path, operation, diagnostic } in
-                        self.problems.rows_in_range(visible_rows)
+                        self.semantic.problems.rows_in_range(visible_rows)
                     {
                         let marker = match diagnostic.severity {
                             vapor_gui_core::DiagnosticSeverity::Error => "Error",
@@ -111,7 +111,7 @@ impl IdeApp {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
             .unwrap_or_default();
-        self.console.history.push(ConsoleRecord::new(
+        self.interface.console.history.push(ConsoleRecord::new(
             now,
             ConsoleLevel::Input,
             "console",
@@ -120,26 +120,26 @@ impl IdeApp {
         match ConsoleCommand::parse(line) {
             Ok(ConsoleCommand::Help) => {
                 for command in console_command_catalog(ConsoleCommandScope::Workspace) {
-                    self.console.history.push(
+                    self.interface.console.history.push(
                         ConsoleRecord::new(now, ConsoleLevel::Info, "help", command.path)
                             .field("description", command.summary),
                     );
                 }
             }
-            Ok(ConsoleCommand::Status) => self.console.history.push(ConsoleRecord::new(
+            Ok(ConsoleCommand::Status) => self.interface.console.history.push(ConsoleRecord::new(
                 now,
                 ConsoleLevel::Info,
                 "ide",
-                self.status.clone(),
+                self.workspace.status.clone(),
             )),
             Ok(command) => match command.outcome() {
                 ConsoleCommandOutcome::Action(action) => {
-                    if let Some(service) = self.service.as_mut() {
+                    if let Some(service) = self.service.client.as_mut() {
                         match service.send(*action, None) {
                             Ok(request_id) => {
-                                self.console_requests.insert(request_id.0);
+                                self.interface.console_requests.insert(request_id.0);
                             }
-                            Err(error) => self.console.history.push(ConsoleRecord::new(
+                            Err(error) => self.interface.console.history.push(ConsoleRecord::new(
                                 now,
                                 ConsoleLevel::Error,
                                 "vapor",
@@ -147,7 +147,7 @@ impl IdeApp {
                             )),
                         }
                     } else {
-                        self.console.history.push(ConsoleRecord::new(
+                        self.interface.console.history.push(ConsoleRecord::new(
                             now,
                             ConsoleLevel::Error,
                             "vapor",
@@ -157,7 +157,7 @@ impl IdeApp {
                 }
                 ConsoleCommandOutcome::Help | ConsoleCommandOutcome::Status => unreachable!(),
             },
-            Err(error) => self.console.history.push(ConsoleRecord::new(
+            Err(error) => self.interface.console.history.push(ConsoleRecord::new(
                 now,
                 ConsoleLevel::Error,
                 "console",
