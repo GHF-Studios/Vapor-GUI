@@ -1,5 +1,15 @@
 use super::*;
 
+const WORKSPACE_SYMBOL_SEARCH_DEBOUNCE: Duration = Duration::from_millis(180);
+
+pub(super) fn workspace_symbol_search_debounce_pending(
+    changed_at: Option<Instant>,
+    now: Instant,
+) -> bool {
+    changed_at
+        .is_some_and(|changed_at| now.duration_since(changed_at) < WORKSPACE_SYMBOL_SEARCH_DEBOUNCE)
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum LanguageServerRequest {
     Start,
@@ -127,6 +137,8 @@ impl IdeApp {
         self.language_server.completion_items.clear();
         self.language_server.workspace_symbols.clear();
         self.language_server.workspace_symbol_query = None;
+        self.language_server.workspace_symbol_input_query = None;
+        self.language_server.workspace_symbol_input_changed_at = None;
         self.language_server.status = "Starting Vapor-managed Rust Analyzer...".to_owned();
         self.send_language_server_action(
             LanguageServerAction::Start {
@@ -381,6 +393,17 @@ impl IdeApp {
 
     pub(super) fn request_workspace_symbols(&mut self, query: &str) {
         let query = query.trim();
+        let next_input = (!query.is_empty()).then(|| query.to_owned());
+        if self.language_server.workspace_symbol_input_query != next_input {
+            self.language_server.workspace_symbol_input_query = next_input;
+            self.language_server.workspace_symbol_input_changed_at = Some(Instant::now());
+            self.language_server.workspace_symbol_query = None;
+            self.language_server.workspace_symbols.clear();
+            self.cancel_workspace_symbol_requests();
+            if query.is_empty() {
+                return;
+            }
+        }
         if query.is_empty() {
             self.language_server.workspace_symbol_query = None;
             self.language_server.workspace_symbols.clear();
@@ -391,23 +414,17 @@ impl IdeApp {
         {
             return;
         }
+        if workspace_symbol_search_debounce_pending(
+            self.language_server.workspace_symbol_input_changed_at,
+            Instant::now(),
+        ) {
+            return;
+        }
         let Some(root) = self.workspace.root.clone() else {
             return;
         };
 
-        let cancelled = pending_lsp_requests_for_cancellation(
-            &self.language_server.pending_requests,
-            LspRequest::WorkspaceSymbols,
-            None,
-        );
-        for id in cancelled {
-            self.language_server.pending_requests.remove(&id);
-            self.send_language_server_notification(serde_json::json!({
-                "jsonrpc": "2.0",
-                "method": "$/cancelRequest",
-                "params": {"id": id}
-            }));
-        }
+        self.cancel_workspace_symbol_requests();
 
         let message_id = self.language_server.next_request_id;
         self.language_server.next_request_id =
@@ -440,6 +457,22 @@ impl IdeApp {
         self.language_server.workspace_symbol_query = Some(query.to_owned());
         self.workspace.status = format!("Searching Rust Analyzer for `{query}`…");
         self.send_language_server_notification(message);
+    }
+
+    fn cancel_workspace_symbol_requests(&mut self) {
+        let cancelled = pending_lsp_requests_for_cancellation(
+            &self.language_server.pending_requests,
+            LspRequest::WorkspaceSymbols,
+            None,
+        );
+        for id in cancelled {
+            self.language_server.pending_requests.remove(&id);
+            self.send_language_server_notification(serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "$/cancelRequest",
+                "params": {"id": id}
+            }));
+        }
     }
 
     pub(super) fn request_lsp_formatting(&mut self, path: &Path) {

@@ -474,6 +474,7 @@ impl IdeApp {
             {
                 self.semantic.explorer_symbols = false;
                 self.semantic.pending_workspace_symbol = None;
+                self.request_workspace_symbols("");
             }
             if ui
                 .selectable_label(self.semantic.explorer_symbols, "Structure")
@@ -599,6 +600,7 @@ impl IdeApp {
             }
             if let Some(symbol) = requested_workspace_symbol {
                 self.semantic.selected = None;
+                self.interface.inspector_open = true;
                 self.navigate_to_workspace_symbol(&symbol);
             }
         } else {

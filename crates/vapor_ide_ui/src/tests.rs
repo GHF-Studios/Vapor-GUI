@@ -979,6 +979,24 @@ fn workspace_search_selection_rejects_ambiguous_same_name_declarations() {
 }
 
 #[test]
+fn workspace_symbol_search_debounce_waits_only_for_the_current_input_window() {
+    let changed_at = std::time::Instant::now();
+    assert!(
+        super::language_server::workspace_symbol_search_debounce_pending(
+            Some(changed_at),
+            changed_at + std::time::Duration::from_millis(179),
+        )
+    );
+    assert!(
+        !super::language_server::workspace_symbol_search_debounce_pending(
+            Some(changed_at),
+            changed_at + std::time::Duration::from_millis(180),
+        )
+    );
+    assert!(!super::language_server::workspace_symbol_search_debounce_pending(None, changed_at,));
+}
+
+#[test]
 fn superseded_document_symbol_requests_are_scoped_to_the_same_file() {
     let pending = |request, path: &str| super::PendingLspRequest {
         request,

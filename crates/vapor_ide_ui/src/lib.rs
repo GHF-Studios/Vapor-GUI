@@ -238,6 +238,8 @@ struct LanguageServerState {
     completion_items: Vec<CompletionItem>,
     workspace_symbols: Vec<SemanticObject>,
     workspace_symbol_query: Option<String>,
+    workspace_symbol_input_query: Option<String>,
+    workspace_symbol_input_changed_at: Option<Instant>,
     code_actions: Vec<LanguageServerCodeAction>,
     code_action_request: Option<PendingLspRequest>,
 }
@@ -256,6 +258,8 @@ impl Default for LanguageServerState {
             completion_items: Vec::new(),
             workspace_symbols: Vec::new(),
             workspace_symbol_query: None,
+            workspace_symbol_input_query: None,
+            workspace_symbol_input_changed_at: None,
             code_actions: Vec::new(),
             code_action_request: None,
         }
