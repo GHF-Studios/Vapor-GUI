@@ -10,7 +10,8 @@ use super::{
     cursor_position, document_tab_label, file_display_label, file_uri, find_matches, hover_text,
     identifier_byte_range, lsp_position, nonempty_path,
     path_from_file_uri, position_to_byte_offset, reference_locations,
-    relative_workspace_path, rust_analyzer_initialization_options, rust_label_parts,
+    relative_workspace_path, rust_analyzer_client_capabilities,
+    rust_analyzer_initialization_options, rust_label_parts,
     rust_crate_roots,
     shortest_rust_label, toml_parse_diagnostic, workspace_tree_ordering,
     semantic_object_byte_range,
@@ -399,6 +400,15 @@ fn rust_analyzer_initialization_disables_implicit_cargo_build_work() {
     assert_eq!(options["checkOnSave"], false);
     assert_eq!(options["cargo"]["buildScripts"]["enable"], false);
     assert_eq!(options["procMacro"]["enable"], false);
+}
+
+#[test]
+fn rust_analyzer_client_capabilities_advertise_previewable_quick_fixes_without_server_writes() {
+    let capabilities = rust_analyzer_client_capabilities();
+    assert_eq!(capabilities["textDocument"]["codeAction"]["dynamicRegistration"], false);
+    assert_eq!(capabilities["textDocument"]["codeAction"]["codeActionLiteralSupport"]["codeActionKind"]["valueSet"][0], "quickfix");
+    assert_eq!(capabilities["workspace"]["applyEdit"], false);
+    assert_eq!(capabilities["workspace"]["workspaceEdit"]["documentChanges"], true);
 }
 
 #[test]
@@ -1183,5 +1193,18 @@ fn source_diagnostic_context_adds_workspace_revision_without_erasing_domain_scop
     assert_eq!(diagnostics[0].context.document_version, Some(12));
     assert_eq!(diagnostics[1].context.scope, vapor_gui_core::DiagnosticScope::Document);
     assert_eq!(diagnostics[1].context.document_version, Some(12));
+}
+
+#[test]
+fn rust_quick_fixes_keep_only_direct_edit_actions_with_titles() {
+    let actions = super::language_server::parse_edit_code_actions(&serde_json::json!([
+        {"title": "Add derive", "kind": "quickfix", "edit": {"changes": {}}},
+        {"title": "Run command", "command": {"command": "rust-analyzer.run"}},
+        {"kind": "quickfix", "edit": {"changes": {}}},
+        {"title": "Edit and run", "edit": {}, "command": {"command": "unsafe"}}
+    ]));
+
+    assert_eq!(actions.len(), 1);
+    assert_eq!(actions[0].title, "Add derive");
 }
 

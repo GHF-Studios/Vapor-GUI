@@ -14,10 +14,41 @@ pub(super) enum LspRequest {
     Hover,
     Completion,
     Formatting,
+    CodeActions,
     DocumentSymbols,
     WorkspaceSymbols,
 }
 
+#[derive(Clone)]
+pub(super) struct LanguageServerCodeAction {
+    pub(super) title: String,
+    pub(super) edit: serde_json::Value,
+}
+
+pub(super) fn parse_edit_code_actions(
+    result: &serde_json::Value,
+) -> Vec<LanguageServerCodeAction> {
+    let Some(actions) = result.as_array() else {
+        return Vec::new();
+    };
+    actions
+        .iter()
+        .filter_map(|action| {
+            // `command` actions can invoke arbitrary language-server behavior. Until the
+            // service exposes a typed command allowlist, only direct edits are previewable.
+            if action.get("command").is_some() {
+                return None;
+            }
+            Some(LanguageServerCodeAction {
+                title: action.get("title")?.as_str()?.to_owned(),
+                edit: action.get("edit")?.clone(),
+            })
+        })
+        .take(64)
+        .collect()
+}
+
+#[derive(Clone)]
 pub(super) struct PendingLspRequest {
     pub(super) request: LspRequest,
     pub(super) path: PathBuf,
@@ -104,6 +135,8 @@ impl IdeApp {
         self.send_language_server_action(LanguageServerAction::Stop, LanguageServerRequest::Stop);
         self.language_server.ready = false;
         self.language_server.status = "Rust Analyzer is stopped".to_owned();
+        self.language_server.code_actions.clear();
+        self.language_server.code_action_request = None;
     }
 
     pub(super) fn initialize_language_server(&mut self) {
@@ -118,14 +151,7 @@ impl IdeApp {
             "params": {
                 "processId": null,
                 "rootUri": root_uri.clone(),
-                "capabilities": {
-                    "textDocument": {
-                        "publishDiagnostics": {"relatedInformation": true},
-                        "documentSymbol": {"hierarchicalDocumentSymbolSupport": true},
-                        "synchronization": {"didSave": true}
-                    },
-                    "workspace": {"workspaceFolders": true}
-                },
+                "capabilities": rust_analyzer_client_capabilities(),
                 "initializationOptions": rust_analyzer_initialization_options(),
                 "workspaceFolders": [{"uri": root_uri, "name": root.file_name().unwrap_or_default().to_string_lossy()}]
             }
@@ -154,6 +180,76 @@ impl IdeApp {
         };
         let position = lsp_position(&document.contents, self.editor.cursor_offset);
         self.request_lsp_at_position(&path, position, method, request, None);
+    }
+
+    pub(super) fn request_diagnostic_code_actions(
+        &mut self,
+        path: &Path,
+        diagnostic: &vapor_gui_core::StructuredDiagnostic,
+    ) {
+        if !self.language_server.ready {
+            self.workspace.status = "Rust Analyzer is not ready yet.".to_owned();
+            return;
+        }
+        let Some(document) = self.editor.documents.get(path) else {
+            self.workspace.status = "Open this source file before requesting a quick fix.".to_owned();
+            return;
+        };
+        let Some(span) = diagnostic.primary.as_ref() else {
+            self.workspace.status = "This diagnostic has no source range for a quick fix.".to_owned();
+            return;
+        };
+        let message_id = self.language_server.next_request_id;
+        self.language_server.next_request_id = self.language_server.next_request_id.saturating_add(1);
+        let workspace_versions = self.editor.documents
+            .iter()
+            .map(|(path, document)| (path.clone(), document.version))
+            .collect();
+        let severity = match diagnostic.severity {
+            vapor_gui_core::DiagnosticSeverity::Error => 1,
+            vapor_gui_core::DiagnosticSeverity::Warning => 2,
+            vapor_gui_core::DiagnosticSeverity::Information => 3,
+            vapor_gui_core::DiagnosticSeverity::Hint => 4,
+        };
+        let lsp_diagnostic = serde_json::json!({
+            "range": {
+                "start": {
+                    "line": span.start_line.saturating_sub(1),
+                    "character": span.start_column.saturating_sub(1)
+                },
+                "end": {
+                    "line": span.end_line.saturating_sub(1),
+                    "character": span.end_column.saturating_sub(1)
+                }
+            },
+            "severity": severity,
+            "code": diagnostic.code.as_deref(),
+            "source": "rust-analyzer",
+            "message": diagnostic.message
+        });
+        let message = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": message_id,
+            "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": {"uri": self.document_uri(path)},
+                "range": lsp_diagnostic["range"].clone(),
+                "context": {"diagnostics": [lsp_diagnostic], "only": ["quickfix"], "triggerKind": 1}
+            }
+        });
+        self.language_server.code_actions.clear();
+        self.language_server.code_action_request = None;
+        self.language_server.pending_requests.insert(message_id, PendingLspRequest {
+            request: LspRequest::CodeActions,
+            path: path.to_path_buf(),
+            document_version: document.version,
+            semantic_target: None,
+            cursor_offset: None,
+            workspace_versions: Some(workspace_versions),
+            query: None,
+        });
+        self.workspace.status = "Asking Rust Analyzer for safe, reviewable quick fixes…".to_owned();
+        self.send_language_server_notification(message);
     }
 
     pub(super) fn request_lsp_at_position(
@@ -439,17 +535,67 @@ impl IdeApp {
         self.workspace.status = format!("Review the Rust Analyzer formatting preview for {}.", path.display());
     }
 
+    pub(super) fn draw_code_actions(&mut self, context: &egui::Context) {
+        if self.language_server.code_actions.is_empty() {
+            return;
+        }
+        let mut open = true;
+        let mut selected = None;
+        egui::Window::new("Rust quick fixes")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(context, |ui| {
+                ui.label("Choose a direct edit to preview. Commands that could run outside the editor are hidden.");
+                ui.separator();
+                for (index, action) in self.language_server.code_actions.iter().enumerate() {
+                    if ui.button(&action.title).clicked() {
+                        selected = Some(index);
+                    }
+                }
+            });
+        if !open {
+            self.language_server.code_actions.clear();
+            self.language_server.code_action_request = None;
+            return;
+        }
+        let Some(index) = selected else {
+            return;
+        };
+        let Some(request) = self.language_server.code_action_request.clone() else {
+            self.language_server.code_actions.clear();
+            self.workspace.status = "The quick-fix request is no longer available.".to_owned();
+            return;
+        };
+        let versions_are_current = request.workspace_versions.as_ref()
+            .is_some_and(|versions| workspace_versions_match(versions, &self.editor.documents));
+        let document_is_current = self.editor.documents.get(&request.path)
+            .is_some_and(|document| document.version == request.document_version);
+        if !versions_are_current || !document_is_current {
+            self.language_server.code_actions.clear();
+            self.language_server.code_action_request = None;
+            self.workspace.status = "The source changed after quick fixes were requested; request them again.".to_owned();
+            return;
+        }
+        let Some(edit) = self.language_server.code_actions.get(index).map(|action| action.edit.clone()) else {
+            return;
+        };
+        self.prepare_workspace_edit(&request, &edit);
+        self.language_server.code_actions.clear();
+        self.language_server.code_action_request = None;
+    }
+
     pub(super) fn prepare_workspace_edit(&mut self, request: &PendingLspRequest, result: &serde_json::Value) {
         let Some(root) = self.workspace.root.as_deref() else {
-            self.workspace.status = "Open a workspace before applying a Rust refactor.".to_owned();
+            self.workspace.status = "Open a workspace before applying language-server edits.".to_owned();
             return;
         };
         let Some(versions) = request.workspace_versions.as_ref() else {
-            self.workspace.status = "The rename request has no workspace revision snapshot.".to_owned();
+            self.workspace.status = "The edit request has no workspace revision snapshot.".to_owned();
             return;
         };
         if !workspace_versions_match(versions, &self.editor.documents) {
-            self.workspace.status = "Open files changed while rename was being prepared; request a fresh preview.".to_owned();
+            self.workspace.status = "Open files changed while the edit was being prepared; request a fresh preview.".to_owned();
             return;
         }
         let mut grouped = BTreeMap::<String, (Option<i32>, Vec<serde_json::Value>)>::new();
@@ -484,11 +630,11 @@ impl IdeApp {
             }
         }
         if grouped.is_empty() {
-            self.workspace.status = "Rust Analyzer found no references to rename.".to_owned();
+            self.workspace.status = "Rust Analyzer returned no workspace edits.".to_owned();
             return;
         }
         if grouped.len() > 64 {
-            self.workspace.status = "This rename touches more than 64 files; narrow the operation before previewing.".to_owned();
+            self.workspace.status = "This edit touches more than 64 files; narrow the operation before previewing.".to_owned();
             return;
         }
         let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
@@ -497,34 +643,34 @@ impl IdeApp {
         let mut total_bytes = 0usize;
         for (uri, (lsp_version, edits)) in grouped {
             let Some(absolute_path) = path_from_file_uri(&uri) else {
-                self.workspace.status = "Rust Analyzer returned a non-local file URI; rename was not applied.".to_owned();
+                self.workspace.status = "Rust Analyzer returned a non-local file URI; the edit was not applied.".to_owned();
                 return;
             };
             let canonical_path = absolute_path.canonicalize().unwrap_or(absolute_path);
             if !canonical_path.starts_with(&canonical_root) {
-                self.workspace.status = "Rust Analyzer returned an edit outside this workspace; rename was not applied.".to_owned();
+                self.workspace.status = "Rust Analyzer returned an edit outside this workspace; it was not applied.".to_owned();
                 return;
             }
             if !addressed_paths.insert(canonical_path.clone()) {
-                self.workspace.status = "Rust Analyzer returned multiple edits for the same canonical file; rename was not applied.".to_owned();
+                self.workspace.status = "Rust Analyzer returned conflicting edits for one file; they were not applied.".to_owned();
                 return;
             }
             let Some((path, document)) = self.editor.documents.iter().find(|(path, _)| {
                 let candidate = if path.is_absolute() { (*path).clone() } else { canonical_root.join(path) };
                 candidate.canonicalize().unwrap_or(candidate) == canonical_path
             }) else {
-                self.workspace.status = format!("Open {} before previewing this rename; closed files are never changed implicitly.", canonical_path.display());
+                self.workspace.status = format!("Open {} before previewing this edit; closed files are never changed implicitly.", canonical_path.display());
                 return;
             };
             let Some(snapshot_version) = versions.get(path) else {
-                self.workspace.status = format!("{} was opened after the rename began; request a fresh preview.", path.display());
+                self.workspace.status = format!("{} was opened after the edit began; request a fresh preview.", path.display());
                 return;
             };
             if document.version != *snapshot_version
                 || lsp_version.is_some_and(|version| version != document.version)
                 || (path == &request.path && document.version != request.document_version)
             {
-                self.workspace.status = format!("{} changed while rename was being prepared; request a fresh preview.", path.display());
+                self.workspace.status = format!("{} changed while the edit was being prepared; request a fresh preview.", path.display());
                 return;
             }
             let proposed_contents = match apply_text_edits(&document.contents, &edits) {
@@ -536,7 +682,7 @@ impl IdeApp {
             };
             total_bytes = total_bytes.saturating_add(proposed_contents.len());
             if total_bytes > 4 * 1024 * 1024 {
-                self.workspace.status = "This rename preview exceeds 4 MiB; it was not prepared.".to_owned();
+                self.workspace.status = "This edit preview exceeds 4 MiB; it was not prepared.".to_owned();
                 return;
             }
             if proposed_contents != document.contents {
@@ -553,9 +699,10 @@ impl IdeApp {
             return;
         }
         previews.sort_by(|left, right| left.path.cmp(&right.path));
+        let preview_count = previews.len();
         self.semantic.edit_preview = None;
         self.semantic.workspace_edit_preview = Some(previews);
-        self.workspace.status = "Review the multi-file Rust rename preview before applying it.".to_owned();
+        self.workspace.status = format!("Review the {preview_count} file edit preview before applying it.");
     }
 
     pub(super) fn apply_edit_preview(&mut self) {
@@ -594,11 +741,11 @@ impl IdeApp {
         let mut updates = Vec::with_capacity(previews.len());
         for preview in &previews {
             let Some(document) = self.editor.documents.get(&preview.path) else {
-                self.workspace.status = "A file closed before the refactor could be applied; no files changed.".to_owned();
+                self.workspace.status = "A file closed before the edit could be applied; no files changed.".to_owned();
                 return;
             };
             if document.version != preview.document_version || document.contents != preview.original_contents {
-                self.workspace.status = "A file changed after preview; no files changed. Prepare the refactor again.".to_owned();
+                self.workspace.status = "A file changed after preview; no files changed. Prepare the edit again.".to_owned();
                 return;
             }
             let Some(version) = document.version.checked_add(1) else {
@@ -608,7 +755,7 @@ impl IdeApp {
             updates.push((preview.path.clone(), preview.proposed_contents.clone(), version));
         }
         if updates.is_empty() {
-            self.workspace.status = "The refactor preview is empty.".to_owned();
+            self.workspace.status = "The edit preview is empty.".to_owned();
             return;
         }
         for (path, contents, version) in &updates {
@@ -624,7 +771,7 @@ impl IdeApp {
             }
             self.did_change_document(&path, contents, version);
         }
-        self.workspace.status = format!("Applied the refactor to {} open files. Save each changed file to write it to disk.", previews.len());
+        self.workspace.status = format!("Applied edits to {} open files. Save each changed file to write it to disk.", previews.len());
     }
 
     pub(super) fn apply_completion(&mut self, context: &egui::Context, index: usize) {
@@ -864,6 +1011,10 @@ impl IdeApp {
     }
 
     pub(super) fn did_change_document(&mut self, path: &Path, text: String, version: i32) {
+        if self.language_server.code_action_request.is_some() {
+            self.language_server.code_actions.clear();
+            self.language_server.code_action_request = None;
+        }
         self.semantic.index.invalidate_document(path);
         self.language_server.workspace_symbols.clear();
         self.language_server.workspace_symbol_query = None;
@@ -1030,6 +1181,29 @@ impl IdeApp {
                 }
                 return;
             }
+            if request.request == LspRequest::CodeActions {
+                let request_is_current = self.editor.documents
+                    .get(&request.path)
+                    .is_some_and(|document| document.version == request.document_version)
+                    && request.workspace_versions.as_ref()
+                        .is_some_and(|versions| workspace_versions_match(versions, &self.editor.documents));
+                if !request_is_current {
+                    self.workspace.status = "The source changed while Rust Analyzer prepared quick fixes; request them again.".to_owned();
+                    return;
+                }
+                self.language_server.code_actions = parse_edit_code_actions(result);
+                if self.language_server.code_actions.is_empty() {
+                    self.language_server.code_action_request = None;
+                    self.workspace.status = "Rust Analyzer found no direct, reviewable quick fixes.".to_owned();
+                } else {
+                    self.language_server.code_action_request = Some(request);
+                    self.workspace.status = format!(
+                        "Rust Analyzer offered {} reviewable quick fixes.",
+                        self.language_server.code_actions.len()
+                    );
+                }
+                return;
+            }
             if self.editor.documents.get(&request.path).is_none_or(|document| document.version != request.document_version) {
                 return;
             }
@@ -1071,6 +1245,7 @@ impl IdeApp {
                     self.language_server.completion_items = completion_items(result);
                 }
                 LspRequest::Formatting => self.apply_lsp_formatting(&request.path, result),
+                LspRequest::CodeActions => unreachable!("handled before document response routing"),
                 LspRequest::DocumentSymbols => {
                     if let Some(document) = self.editor.documents.get(&request.path) {
                         let parsed = rust_semantics::parse_semantic_document_symbols(

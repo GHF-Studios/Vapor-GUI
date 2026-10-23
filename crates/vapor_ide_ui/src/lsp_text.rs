@@ -66,6 +66,29 @@ pub(super) fn rust_analyzer_initialization_options() -> serde_json::Value {
     })
 }
 
+pub(super) fn rust_analyzer_client_capabilities() -> serde_json::Value {
+    serde_json::json!({
+        "textDocument": {
+            "publishDiagnostics": {"relatedInformation": true},
+            "documentSymbol": {"hierarchicalDocumentSymbolSupport": true},
+            "codeAction": {
+                "dynamicRegistration": false,
+                "codeActionLiteralSupport": {
+                    "codeActionKind": {"valueSet": ["quickfix", "refactor", "refactor.extract", "refactor.inline", "refactor.rewrite"]}
+                }
+            },
+            "synchronization": {"didSave": true}
+        },
+        "workspace": {
+            "workspaceFolders": true,
+            // Edits are previewed and applied to open buffers by the IDE. Rust Analyzer
+            // must not write files behind the editor's revision and save tracking.
+            "applyEdit": false,
+            "workspaceEdit": {"documentChanges": true, "resourceOperations": []}
+        }
+    })
+}
+
 pub(super) fn relative_workspace_path(root: &Path, path: &Path) -> Option<PathBuf> {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let absolute = if path.is_absolute() {

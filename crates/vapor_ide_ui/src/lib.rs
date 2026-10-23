@@ -40,12 +40,13 @@ use diagnostics::{
     operation_produces_build_diagnostics, semantic_source_limit_diagnostic,
     workspace_diagnostic_path,
 };
-use language_server::{LanguageServerRequest, LspRequest, PendingLspRequest};
+use language_server::{LanguageServerCodeAction, LanguageServerRequest, LspRequest, PendingLspRequest};
 use lsp_text::{
     apply_text_edits, completion_items, cursor_position, file_uri, find_matches,
     hover_text, identifier_byte_range, lsp_position, path_from_file_uri,
     position_to_byte_offset, reference_locations, relative_workspace_path,
-    rust_analyzer_initialization_options, semantic_object_byte_range,
+    rust_analyzer_client_capabilities, rust_analyzer_initialization_options,
+    semantic_object_byte_range,
 };
 use toml_semantics::toml_parse_diagnostic;
 use xml_semantics::xml_parse_diagnostic;
@@ -222,6 +223,8 @@ struct LanguageServerState {
     completion_items: Vec<CompletionItem>,
     workspace_symbols: Vec<SemanticObject>,
     workspace_symbol_query: Option<String>,
+    code_actions: Vec<LanguageServerCodeAction>,
+    code_action_request: Option<PendingLspRequest>,
 }
 
 impl Default for LanguageServerState {
@@ -238,6 +241,8 @@ impl Default for LanguageServerState {
             completion_items: Vec::new(),
             workspace_symbols: Vec::new(),
             workspace_symbol_query: None,
+            code_actions: Vec::new(),
+            code_action_request: None,
         }
     }
 }
@@ -419,6 +424,7 @@ impl eframe::App for IdeApp {
         egui::CentralPanel::default().show(ui, |ui| self.draw_editor(ui));
         self.draw_project_switcher(ui.ctx());
         self.draw_authoring_dialogs(ui.ctx());
+        self.draw_code_actions(ui.ctx());
         if self.semantic.edit_preview.is_some() {
             let mut preview_open = true;
             let mut apply = false;
@@ -473,7 +479,7 @@ impl eframe::App for IdeApp {
             let mut preview_open = true;
             let mut apply = false;
             let mut discard = false;
-            egui::Window::new("Review Rust refactor")
+            egui::Window::new("Review Rust changes")
                 .collapsible(false)
                 .resizable(true)
                 .default_size([1100.0, 720.0])
@@ -512,7 +518,7 @@ impl eframe::App for IdeApp {
                         });
                         ui.separator();
                         ui.horizontal(|ui| {
-                            if ui.button("Apply refactor").clicked() {
+                            if ui.button("Apply changes").clicked() {
                                 apply = true;
                             }
                             if ui.button("Discard").clicked() {
@@ -526,7 +532,7 @@ impl eframe::App for IdeApp {
                 self.semantic.rename_target = None;
             } else if discard || !preview_open {
                 self.semantic.workspace_edit_preview = None;
-                self.workspace.status = "Rust refactor preview discarded.".to_owned();
+                self.workspace.status = "Rust edit preview discarded.".to_owned();
             }
         }
         ui.ctx().request_repaint_after(Duration::from_millis(80));

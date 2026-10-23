@@ -67,6 +67,8 @@ impl IdeApp {
         self.semantic.problems.clear();
         self.language_server.workspace_symbols.clear();
         self.language_server.workspace_symbol_query = None;
+        self.language_server.code_actions.clear();
+        self.language_server.code_action_request = None;
         self.send(
             ClientAction::Workspace(WorkspaceAction::Open {
                 root: root.display().to_string(),

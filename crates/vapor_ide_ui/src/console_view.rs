@@ -33,6 +33,7 @@ impl IdeApp {
             }
         } else {
             let mut selected_diagnostic = None;
+            let mut quick_fix_request = None;
             let row_height = ui
                 .text_style_height(&egui::TextStyle::Body)
                 .max(ui.spacing().interact_size.y);
@@ -53,6 +54,11 @@ impl IdeApp {
                         let navigation_span = span.or_else(|| diagnostic.related.first());
                         let line = navigation_span.map_or(1, |span| span.start_line as usize);
                         let column = navigation_span.map_or(1, |span| span.start_column as usize);
+                        let target_path = path.cloned().or_else(|| {
+                            let root = self.workspace.root.as_deref()?;
+                            let span = navigation_span?;
+                            workspace_diagnostic_path(root, &span.file, &self.workspace.files)
+                        });
                         let code = diagnostic.code.as_deref().map_or(String::new(), |code| format!(" [{code}]"));
                         let origin = diagnostic_origin_label(diagnostic.origin);
                         let action = action
@@ -68,18 +74,27 @@ impl IdeApp {
                             ),
                             (None, None) => "workspace".to_owned(),
                         };
-                        let response = ui.selectable_label(
-                            false,
-                            format!("{marker} · {origin}{action}{code}  {location}  {}", diagnostic.message),
-                        );
-                        let response = response.on_hover_ui(|ui| {
-                            ui.label(diagnostic_details(diagnostic));
-                        });
-                        if response.clicked() {
-                            if let Some(path) = path {
-                                selected_diagnostic = Some((path.clone(), line, column));
+                        ui.horizontal(|ui| {
+                            let response = ui.selectable_label(
+                                false,
+                                format!("{marker} · {origin}{action}{code}  {location}  {}", diagnostic.message),
+                            );
+                            let response = response.on_hover_ui(|ui| {
+                                ui.label(diagnostic_details(diagnostic));
+                            });
+                            if response.clicked() {
+                                if let Some(path) = &target_path {
+                                    selected_diagnostic = Some((path.clone(), line, column));
+                                }
                             }
-                        }
+                            if diagnostic.origin == vapor_gui_core::DiagnosticOrigin::RustAnalyzer
+                                && let Some(path) = path
+                                && path.extension().is_some_and(|extension| extension == "rs")
+                                && ui.small_button("Quick fix…").clicked()
+                            {
+                                quick_fix_request = Some((path.clone(), diagnostic.clone()));
+                            }
+                        });
                     }
                 });
             if let Some((path, line, column)) = selected_diagnostic {
@@ -88,6 +103,9 @@ impl IdeApp {
                     line.saturating_sub(1),
                     column.saturating_sub(1),
                 );
+            }
+            if let Some((path, diagnostic)) = quick_fix_request {
+                self.request_diagnostic_code_actions(&path, &diagnostic);
             }
             if diagnostic_count == 0 {
                 ui.weak("Rust Analyzer and managed build problems appear here.");
