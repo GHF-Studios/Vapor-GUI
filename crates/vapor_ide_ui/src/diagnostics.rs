@@ -189,7 +189,7 @@ impl ProblemStore {
         &self,
         path: &Path,
         range: SemanticRange,
-    ) -> Vec<&StructuredDiagnostic> {
+    ) -> Vec<ProblemRowRef<'_>> {
         let mut diagnostics = self
             .source
             .get(path)
@@ -202,7 +202,12 @@ impl ProblemStore {
                         .iter()
                         .any(|diagnostic| diagnostic_overlaps_range(diagnostic, range))
             })
-            .map(|row| &row.diagnostic)
+            .map(|row| ProblemRowRef {
+                path: row.path.as_ref(),
+                action: row.action.as_deref(),
+                diagnostic: &row.diagnostic,
+                linked_diagnostics: &row.linked_diagnostics,
+            })
             .collect::<Vec<_>>();
         diagnostics.extend(
             self.build
@@ -215,7 +220,12 @@ impl ProblemStore {
                             .iter()
                             .any(|diagnostic| diagnostic_overlaps_range(diagnostic, range))
                 })
-                .map(|row| &row.diagnostic),
+                .map(|row| ProblemRowRef {
+                    path: row.path.as_ref(),
+                    action: row.action.as_deref(),
+                    diagnostic: &row.diagnostic,
+                    linked_diagnostics: &row.linked_diagnostics,
+                }),
         );
         diagnostics
     }
@@ -643,6 +653,21 @@ mod tests {
             Some("build-1")
         );
         assert_eq!(rows[0].linked_diagnostics[0].raw_payload, "cargo record");
+        let selected = store.for_semantic_range(
+            Path::new("src/components.rs"),
+            SemanticRange {
+                start: SemanticPosition {
+                    line: 4,
+                    character: 3,
+                },
+                end: SemanticPosition {
+                    line: 4,
+                    character: 9,
+                },
+            },
+        );
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].linked_diagnostics.len(), 1);
 
         store.begin_build("build-2");
         let rows = store.rows();
@@ -737,8 +762,11 @@ mod tests {
         );
 
         assert_eq!(overlapping.len(), 1);
-        assert_eq!(overlapping[0].origin, DiagnosticOrigin::Cargo);
-        assert_eq!(overlapping[0].code.as_deref(), Some("rustc.type-mismatch"));
+        assert_eq!(overlapping[0].diagnostic.origin, DiagnosticOrigin::Cargo);
+        assert_eq!(
+            overlapping[0].diagnostic.code.as_deref(),
+            Some("rustc.type-mismatch")
+        );
     }
 
     #[test]
@@ -778,7 +806,7 @@ mod tests {
         );
 
         assert_eq!(overlapping.len(), 1);
-        assert_eq!(overlapping[0].code.as_deref(), Some("rust.test"));
+        assert_eq!(overlapping[0].diagnostic.code.as_deref(), Some("rust.test"));
         assert!(outside.is_empty());
     }
 

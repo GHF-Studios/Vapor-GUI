@@ -64,7 +64,8 @@ impl IdeApp {
                 if !diagnostics.is_empty() {
                     ui.add_space(8.0);
                     ui.strong(format!("Problems · {}", diagnostics.len()));
-                    for diagnostic in diagnostics {
+                    for problem in diagnostics {
+                        let diagnostic = problem.diagnostic;
                         let severity = match diagnostic.severity {
                             vapor_gui_core::DiagnosticSeverity::Error => {
                                 ("Error", egui::Color32::LIGHT_RED)
@@ -81,7 +82,20 @@ impl IdeApp {
                         };
                         ui.horizontal_wrapped(|ui| {
                             ui.colored_label(severity.1, severity.0);
-                            ui.weak(diagnostic_origin_label(diagnostic.origin));
+                            let mut origins =
+                                Vec::with_capacity(problem.linked_diagnostics.len() + 1);
+                            for origin in std::iter::once(diagnostic.origin).chain(
+                                problem
+                                    .linked_diagnostics
+                                    .iter()
+                                    .map(|diagnostic| diagnostic.origin),
+                            ) {
+                                let label = diagnostic_origin_label(origin);
+                                if !origins.contains(&label) {
+                                    origins.push(label);
+                                }
+                            }
+                            ui.weak(origins.join(" + "));
                             if let Some(code) = &diagnostic.code {
                                 ui.monospace(code);
                             }
@@ -143,8 +157,14 @@ impl IdeApp {
                                 );
                             }
                         });
-                        ui.label(&diagnostic.message)
-                            .on_hover_text(diagnostics::diagnostic_details(diagnostic));
+                        ui.label(&diagnostic.message).on_hover_ui(|ui| {
+                            ui.label(diagnostics::diagnostic_details(diagnostic));
+                            for linked in problem.linked_diagnostics {
+                                ui.separator();
+                                ui.strong(diagnostic_origin_label(linked.origin));
+                                ui.label(diagnostics::diagnostic_details(linked));
+                            }
+                        });
                     }
                 }
             }
