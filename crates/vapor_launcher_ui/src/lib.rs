@@ -353,6 +353,7 @@ pub struct LauncherApp {
     query: String,
     workshop_query: String,
     workshop_kind: Option<ContentKind>,
+    workshop_search_queued: bool,
     workshop_view: WorkshopView,
     subscriptions_query: String,
     subscriptions_kind: Option<ContentKind>,
@@ -379,6 +380,7 @@ impl LauncherApp {
             query: String::new(),
             workshop_query: String::new(),
             workshop_kind: None,
+            workshop_search_queued: false,
             workshop_view: WorkshopView::Discover,
             subscriptions_query: String::new(),
             subscriptions_kind: None,
@@ -556,27 +558,7 @@ impl LauncherApp {
     }
 
     fn receive_operation_output(&mut self, output: OperationOutputEvent) {
-        for line in output.text.lines().filter(|line| !line.trim().is_empty()) {
-            let mut record = ConsoleRecord::new(
-                output.timestamp_unix_ms,
-                output.level,
-                if output.source.is_empty() {
-                    "command"
-                } else {
-                    &output.source
-                },
-                line,
-            );
-            if !output.action.is_empty() {
-                record = record.target(output.action.clone());
-            }
-            record = record.field("operation", output.id.clone()).field(
-                "stream",
-                format!("{:?}", output.stream).to_ascii_lowercase(),
-            );
-            if let Some(process) = &output.process {
-                record = record.field("process", process.clone());
-            }
+        for record in vapor_gui_core::console::records_from_operation_output(&output) {
             self.console.history.push(record);
         }
     }
@@ -592,7 +574,8 @@ impl LauncherApp {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
             .unwrap_or_default();
-        let mut record = ConsoleRecord::new(timestamp, level, source, message);
+        let mut record =
+            ConsoleRecord::new(timestamp, level, source, message).field("origin", "launcher");
         if let Some(operation_id) = operation_id {
             record = record.field("operation", operation_id);
         }
@@ -928,6 +911,13 @@ impl LauncherApp {
             ui.weak("One item identity, viewed by discovery or account subscription.");
         });
         if self.workshop_view == WorkshopView::Discover {
+            let busy = self
+                .service
+                .as_ref()
+                .and_then(|service| service.latest_snapshot().active_operation.as_ref())
+                .is_some();
+            let mut search_clicked = false;
+            let mut kind_changed = false;
             vapor_gui_core::panel::Panel::new("Discover", |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.add(
@@ -935,7 +925,6 @@ impl LauncherApp {
                             .hint_text("Search Workshop")
                             .desired_width(ui.available_width().min(320.0)),
                     );
-                    let mut kind_changed = false;
                     egui::ComboBox::from_label("Content type")
                         .selected_text(
                             self.workshop_kind
@@ -959,16 +948,18 @@ impl LauncherApp {
                                     .changed();
                             }
                         });
-                    let busy = self
-                        .service
-                        .as_ref()
-                        .and_then(|service| service.latest_snapshot().active_operation.as_ref())
-                        .is_some();
-                    if ui
+                    search_clicked = ui
                         .add_enabled(!busy, egui::Button::new("Search Workshop"))
-                        .clicked()
-                        || (kind_changed && !busy)
-                    {
+                        .clicked();
+                    if kind_changed || search_clicked {
+                        if busy {
+                            self.workshop_search_queued = true;
+                        } else {
+                            self.workshop_search_queued = false;
+                            self.search_workshop(1);
+                        }
+                    } else if self.workshop_search_queued && !busy {
+                        self.workshop_search_queued = false;
                         self.search_workshop(1);
                     }
                 });

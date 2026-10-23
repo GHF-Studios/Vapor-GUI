@@ -1,6 +1,6 @@
 use eframe::egui;
 use std::{
-    collections::{BTreeMap, HashSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashSet, VecDeque},
     ops::Range,
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, TryRecvError},
@@ -9,11 +9,25 @@ use std::{
 };
 use vapor_client::{Client, ClientHostConfig, service_sibling_path};
 use vapor_client_protocol::{
-    ClientAction, ClientEvent, LanguageServerAction, OperationStatus, ProtocolFrame,
+    ClientAction, ClientEvent, LanguageServerAction, LanguageServerDiagnostics, OperationStatus,
+    ProtocolFrame,
     WorkspaceAction, WorkspaceFileResult, WorkspaceProjectSelection, WorkspaceToolOperation,
 };
-use vapor_gui_core::workspace_tree::{WorkspaceFileTree, WorkspaceTreeEntry};
+use vapor_gui_core::semantic::{
+    SemanticObject, SemanticObjectRef, SemanticRange, SemanticWorkspaceIndex,
+};
+use vapor_gui_core::workspace_tree::{WorkspaceFileTree, WorkspaceTreeEntry, WorkspaceTreeOrdering};
 use vapor_gui_core::{ConsoleLevel, ConsoleRecord};
+
+mod authoring;
+mod semantic_view;
+mod rust_semantics;
+mod diagnostics;
+mod toml_semantics;
+mod xml_semantics;
+
+use authoring::WorkspaceAuthoring;
+use diagnostics::{ProblemRow, ProblemRowRef, ProblemStore};
 
 #[derive(Clone)]
 struct Document {
@@ -24,19 +38,13 @@ struct Document {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Diagnostic {
-    line: usize,
-    character: usize,
-    severity: Option<u64>,
-    message: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 struct ReferenceLocation {
     path: PathBuf,
     line: usize,
     character: usize,
 }
+
+const MAX_REFERENCE_LOCATIONS: usize = 500;
 
 #[derive(Clone, Copy)]
 enum LanguageServerRequest {
@@ -44,18 +52,83 @@ enum LanguageServerRequest {
     Stop,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum LspRequest {
     Definition,
     References,
+    Rename,
     Hover,
     Completion,
     Formatting,
+    DocumentSymbols,
+    WorkspaceSymbols,
 }
 
 struct PendingLspRequest {
     request: LspRequest,
     path: PathBuf,
+    document_version: i32,
+    semantic_target: Option<SemanticObjectRef>,
+    cursor_offset: Option<usize>,
+    workspace_versions: Option<BTreeMap<PathBuf, i32>>,
+    query: Option<String>,
+}
+
+fn pending_lsp_requests_for_cancellation(
+    requests: &BTreeMap<i64, PendingLspRequest>,
+    request: LspRequest,
+    path: Option<&Path>,
+) -> Vec<i64> {
+    requests
+        .iter()
+        .filter_map(|(id, pending)| {
+            (pending.request == request
+                && path.is_none_or(|path| pending.path == path))
+                .then_some(*id)
+        })
+        .collect()
+}
+
+fn workspace_versions_match(
+    versions: &BTreeMap<PathBuf, i32>,
+    documents: &BTreeMap<PathBuf, Document>,
+) -> bool {
+    versions.len() == documents.len()
+        && versions.iter().all(|(path, version)| {
+            documents
+                .get(path)
+                .is_some_and(|document| document.version == *version)
+        })
+}
+
+struct VersionedEditPreview {
+    path: PathBuf,
+    document_version: i32,
+    original_contents: String,
+    proposed_contents: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EditPreviewApplyError {
+    Stale,
+    NoChange,
+    RevisionExhausted,
+}
+
+fn apply_versioned_edit(
+    document: &mut Document,
+    preview: &VersionedEditPreview,
+) -> Result<i32, EditPreviewApplyError> {
+    if document.version != preview.document_version || document.contents != preview.original_contents {
+        return Err(EditPreviewApplyError::Stale);
+    }
+    if document.contents == preview.proposed_contents {
+        return Err(EditPreviewApplyError::NoChange);
+    }
+    let next_version = document.version.checked_add(1).ok_or(EditPreviewApplyError::RevisionExhausted)?;
+    document.contents = preview.proposed_contents.clone();
+    document.version = next_version;
+    Ok(next_version)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,6 +175,7 @@ pub struct IdeApp {
     workspace: Option<PathBuf>,
     files: Vec<PathBuf>,
     file_tree: WorkspaceFileTree,
+    rust_crate_roots: BTreeSet<PathBuf>,
     documents: BTreeMap<PathBuf, Document>,
     selected_file: Option<PathBuf>,
     file_query: String,
@@ -116,8 +190,8 @@ pub struct IdeApp {
     bottom_open: bool,
     bottom_console_active: bool,
     inspector_open: bool,
-    new_file_dialog: bool,
-    new_file_path: String,
+    about_open: bool,
+    authoring: WorkspaceAuthoring,
     find_open: bool,
     focus_find_query: bool,
     find_query: String,
@@ -133,8 +207,19 @@ pub struct IdeApp {
     pending_navigation: Option<(PathBuf, usize, usize)>,
     hover: Option<String>,
     references: Vec<ReferenceLocation>,
+    references_omitted: usize,
     completion_items: Vec<CompletionItem>,
-    diagnostics: BTreeMap<PathBuf, Vec<Diagnostic>>,
+    problems: ProblemStore,
+    semantic_index: vapor_gui_core::semantic::SemanticWorkspaceIndex,
+    semantic_match_cache: semantic_view::SemanticMatchCache,
+    workspace_symbols: Vec<SemanticObject>,
+    workspace_symbol_query: Option<String>,
+    selected_semantic: Option<vapor_gui_core::semantic::SemanticObjectRef>,
+    explorer_symbols: bool,
+    edit_preview: Option<VersionedEditPreview>,
+    workspace_edit_preview: Option<Vec<VersionedEditPreview>>,
+    rename_target: Option<SemanticObjectRef>,
+    rename_input: String,
 }
 
 impl IdeApp {
@@ -154,6 +239,7 @@ impl IdeApp {
             workspace: None,
             files: Vec::new(),
             file_tree: WorkspaceFileTree::default(),
+            rust_crate_roots: BTreeSet::new(),
             documents: BTreeMap::new(),
             selected_file: None,
             file_query: String::new(),
@@ -168,8 +254,8 @@ impl IdeApp {
             bottom_open: true,
             bottom_console_active: false,
             inspector_open: true,
-            new_file_dialog: false,
-            new_file_path: String::new(),
+            about_open: false,
+            authoring: WorkspaceAuthoring::default(),
             find_open: false,
             focus_find_query: false,
             find_query: String::new(),
@@ -185,8 +271,19 @@ impl IdeApp {
             pending_navigation: None,
             hover: None,
             references: Vec::new(),
+            references_omitted: 0,
             completion_items: Vec::new(),
-            diagnostics: BTreeMap::new(),
+            problems: ProblemStore::default(),
+            semantic_index: vapor_gui_core::semantic::SemanticWorkspaceIndex::default(),
+            semantic_match_cache: semantic_view::SemanticMatchCache::default(),
+            workspace_symbols: Vec::new(),
+            workspace_symbol_query: None,
+            selected_semantic: None,
+            explorer_symbols: false,
+            edit_preview: None,
+            workspace_edit_preview: None,
+            rename_target: None,
+            rename_input: String::new(),
         };
         app.connect();
         app
@@ -255,7 +352,9 @@ impl IdeApp {
             return;
         }
         self.stop_language_server();
-        self.diagnostics.clear();
+        self.problems.clear();
+        self.workspace_symbols.clear();
+        self.workspace_symbol_query = None;
         self.send(
             ClientAction::Workspace(WorkspaceAction::Open {
                 root: root.display().to_string(),
@@ -292,6 +391,8 @@ impl IdeApp {
         self.next_lsp_request_id = 2;
         self.lsp_requests.clear();
         self.completion_items.clear();
+        self.workspace_symbols.clear();
+        self.workspace_symbol_query = None;
         self.language_server_status = "Starting Vapor-managed Rust Analyzer...".to_owned();
         self.send_language_server_action(
             LanguageServerAction::Start {
@@ -326,10 +427,12 @@ impl IdeApp {
                 "capabilities": {
                     "textDocument": {
                         "publishDiagnostics": {"relatedInformation": true},
+                        "documentSymbol": {"hierarchicalDocumentSymbolSupport": true},
                         "synchronization": {"didSave": true}
                     },
                     "workspace": {"workspaceFolders": true}
                 },
+                "initializationOptions": rust_analyzer_initialization_options(),
                 "workspaceFolders": [{"uri": root_uri, "name": root.file_name().unwrap_or_default().to_string_lossy()}]
             }
         });
@@ -349,20 +452,44 @@ impl IdeApp {
     }
 
     fn request_lsp_at_cursor(&mut self, method: &str, request: LspRequest) {
+        let Some(path) = self.selected_file.clone() else {
+            return;
+        };
+        let Some(document) = self.documents.get(&path) else {
+            return;
+        };
+        let position = lsp_position(&document.contents, self.cursor_offset);
+        self.request_lsp_at_position(&path, position, method, request, None);
+    }
+
+    fn request_lsp_at_position(
+        &mut self,
+        path: &Path,
+        position: serde_json::Value,
+        method: &str,
+        request: LspRequest,
+        semantic_target: Option<SemanticObjectRef>,
+    ) {
         if !self.language_server_ready {
             self.status = "Rust Analyzer is not ready yet.".to_owned();
             return;
         }
-        let Some(path) = self.selected_file.clone() else {
-            return;
-        };
         if path.extension().is_none_or(|extension| extension != "rs") {
             self.status = "This language feature is available for Rust source files.".to_owned();
             return;
         }
-        let Some(document) = self.documents.get(&path) else {
+        let Some(document) = self.documents.get(path) else {
+            self.status = "Open the source file before requesting Rust Analyzer references.".to_owned();
             return;
         };
+        let document_version = document.version;
+        let uri = self.document_uri(path);
+        let workspace_versions = matches!(request, LspRequest::References).then(|| {
+            self.documents
+                .iter()
+                .map(|(path, document)| (path.clone(), document.version))
+                .collect()
+        });
         let message_id = self.next_lsp_request_id;
         self.next_lsp_request_id = self.next_lsp_request_id.saturating_add(1);
         let mut message = serde_json::json!({
@@ -370,21 +497,124 @@ impl IdeApp {
             "id": message_id,
             "method": method,
             "params": {
-                "textDocument": {"uri": self.document_uri(&path)},
-                "position": lsp_position(&document.contents, self.cursor_offset)
+                "textDocument": {"uri": uri},
+                "position": position
             }
         });
         if matches!(request, LspRequest::References) {
             message["params"]["context"] = serde_json::json!({"includeDeclaration": true});
             self.references.clear();
+            self.references_omitted = 0;
         }
         self.lsp_requests.insert(
             message_id,
             PendingLspRequest {
                 request,
-                path: path.clone(),
+                path: path.to_path_buf(),
+                document_version,
+                cursor_offset: (matches!(request, LspRequest::References) && semantic_target.is_none())
+                    .then_some(self.cursor_offset),
+                semantic_target,
+                workspace_versions,
+                query: None,
             },
         );
+        self.send_language_server_notification(message);
+    }
+
+    fn request_document_symbols(&mut self, path: &Path) {
+        if !self.language_server_ready || path.extension().is_none_or(|extension| extension != "rs") {
+            return;
+        }
+        let Some(document) = self.documents.get(path) else {
+            return;
+        };
+        let version = document.version;
+        for id in pending_lsp_requests_for_cancellation(
+            &self.lsp_requests,
+            LspRequest::DocumentSymbols,
+            Some(path),
+        ) {
+            self.lsp_requests.remove(&id);
+            self.send_language_server_notification(serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "$/cancelRequest",
+                "params": {"id": id}
+            }));
+        }
+        let message_id = self.next_lsp_request_id;
+        self.next_lsp_request_id = self.next_lsp_request_id.saturating_add(1);
+        let message = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": message_id,
+            "method": "textDocument/documentSymbol",
+            "params": {"textDocument": {"uri": self.document_uri(path)}}
+        });
+        self.lsp_requests.insert(message_id, PendingLspRequest {
+            request: LspRequest::DocumentSymbols,
+            path: path.to_path_buf(),
+            document_version: version,
+            semantic_target: None,
+            cursor_offset: None,
+            workspace_versions: None,
+            query: None,
+        });
+        self.send_language_server_notification(message);
+    }
+
+    fn request_workspace_symbols(&mut self, query: &str) {
+        let query = query.trim();
+        if query.is_empty() {
+            self.workspace_symbol_query = None;
+            self.workspace_symbols.clear();
+            return;
+        }
+        if !self.language_server_ready || self.workspace_symbol_query.as_deref() == Some(query) {
+            return;
+        }
+        let Some(root) = self.workspace.clone() else {
+            return;
+        };
+
+        let cancelled = pending_lsp_requests_for_cancellation(
+            &self.lsp_requests,
+            LspRequest::WorkspaceSymbols,
+            None,
+        );
+        for id in cancelled {
+            self.lsp_requests.remove(&id);
+            self.send_language_server_notification(serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "$/cancelRequest",
+                "params": {"id": id}
+            }));
+        }
+
+        let message_id = self.next_lsp_request_id;
+        self.next_lsp_request_id = self.next_lsp_request_id.saturating_add(1);
+        let workspace_versions = self
+            .documents
+            .iter()
+            .map(|(path, document)| (path.clone(), document.version))
+            .collect();
+        let message = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": message_id,
+            "method": "workspace/symbol",
+            "params": {"query": query}
+        });
+        self.lsp_requests.insert(message_id, PendingLspRequest {
+            request: LspRequest::WorkspaceSymbols,
+            path: root,
+            document_version: 0,
+            semantic_target: None,
+            cursor_offset: None,
+            workspace_versions: Some(workspace_versions),
+            query: Some(query.to_owned()),
+        });
+        self.workspace_symbols.clear();
+        self.workspace_symbol_query = Some(query.to_owned());
+        self.status = format!("Searching Rust Analyzer for `{query}`…");
         self.send_language_server_notification(message);
     }
 
@@ -416,8 +646,71 @@ impl IdeApp {
             PendingLspRequest {
                 request: LspRequest::Formatting,
                 path: path.to_path_buf(),
+                document_version: self.documents.get(path).map_or(0, |document| document.version),
+                semantic_target: None,
+                cursor_offset: None,
+                workspace_versions: None,
+                query: None,
             },
         );
+        self.send_language_server_notification(message);
+    }
+
+    fn request_lsp_rename(&mut self, target: SemanticObjectRef, new_name: &str) {
+        let Some(object) = self.semantic_index.resolve(&target) else {
+            self.status = "That semantic selection is out of date; select it again.".to_owned();
+            return;
+        };
+        if !self.language_server_ready {
+            self.status = "Rust Analyzer is not ready yet.".to_owned();
+            return;
+        }
+        if object.id.domain != "rust" || object.id.document.extension().is_none_or(|ext| ext != "rs") {
+            self.status = "Rename is currently available for Rust declarations.".to_owned();
+            return;
+        }
+        let new_name = new_name.trim();
+        if new_name == object.name || syn::parse_str::<syn::Ident>(new_name).is_err() {
+            self.status = "Enter a valid, different Rust identifier.".to_owned();
+            return;
+        }
+        let path = object.id.document.clone();
+        let Some(document) = self.documents.get(&path) else {
+            self.status = "Open the declaration file before renaming it.".to_owned();
+            return;
+        };
+        let document_version = document.version;
+        let position = serde_json::json!({
+            "line": object.selection_range.start.line,
+            "character": object.selection_range.start.character
+        });
+        let workspace_versions = self
+            .documents
+            .iter()
+            .map(|(path, document)| (path.clone(), document.version))
+            .collect();
+        let message_id = self.next_lsp_request_id;
+        self.next_lsp_request_id = self.next_lsp_request_id.saturating_add(1);
+        let message = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": message_id,
+            "method": "textDocument/rename",
+            "params": {
+                "textDocument": {"uri": self.document_uri(&path)},
+                "position": position,
+                "newName": new_name
+            }
+        });
+        self.lsp_requests.insert(message_id, PendingLspRequest {
+            request: LspRequest::Rename,
+            path,
+            document_version,
+            semantic_target: Some(target),
+            cursor_offset: None,
+            workspace_versions: Some(workspace_versions),
+            query: None,
+        });
+        self.status = format!("Preparing Rust Analyzer rename to `{new_name}`…");
         self.send_language_server_notification(message);
     }
 
@@ -445,14 +738,201 @@ impl IdeApp {
             self.status = "File is already formatted.".to_owned();
             return;
         }
-        let document = self.documents.get_mut(path).expect("open document checked");
-        document.contents = formatted.clone();
-        document.version += 1;
-        let version = document.version;
-        self.cursor_offset = self.cursor_offset.min(formatted.chars().count());
-        self.cursor_position = cursor_position(&formatted, self.cursor_offset);
-        self.did_change_document(path, formatted, version);
-        self.status = format!("Formatted {} with Rust Analyzer.", path.display());
+        self.edit_preview = Some(VersionedEditPreview {
+            path: path.to_path_buf(),
+            document_version: document.version,
+            original_contents: document.contents.clone(),
+            proposed_contents: formatted,
+        });
+        self.status = format!("Review the Rust Analyzer formatting preview for {}.", path.display());
+    }
+
+    fn prepare_workspace_edit(&mut self, request: &PendingLspRequest, result: &serde_json::Value) {
+        let Some(root) = self.workspace.as_deref() else {
+            self.status = "Open a workspace before applying a Rust refactor.".to_owned();
+            return;
+        };
+        let Some(versions) = request.workspace_versions.as_ref() else {
+            self.status = "The rename request has no workspace revision snapshot.".to_owned();
+            return;
+        };
+        if !workspace_versions_match(versions, &self.documents) {
+            self.status = "Open files changed while rename was being prepared; request a fresh preview.".to_owned();
+            return;
+        }
+        let mut grouped = BTreeMap::<String, (Option<i32>, Vec<serde_json::Value>)>::new();
+        if let Some(changes) = result.get("changes").and_then(serde_json::Value::as_object) {
+            for (uri, edits) in changes {
+                let Some(edits) = edits.as_array() else {
+                    self.status = "Rust Analyzer returned an invalid workspace edit.".to_owned();
+                    return;
+                };
+                grouped.entry(uri.clone()).or_default().1.extend(edits.iter().cloned());
+            }
+        }
+        if let Some(changes) = result.get("documentChanges").and_then(serde_json::Value::as_array) {
+            for change in changes {
+                let (Some(uri), Some(edits)) = (
+                    change.pointer("/textDocument/uri").and_then(serde_json::Value::as_str),
+                    change.get("edits").and_then(serde_json::Value::as_array),
+                ) else {
+                    self.status = "Rust Analyzer returned a file operation or malformed edit; it was not applied.".to_owned();
+                    return;
+                };
+                let version = change.pointer("/textDocument/version")
+                    .and_then(serde_json::Value::as_i64)
+                    .and_then(|version| i32::try_from(version).ok());
+                let entry = grouped.entry(uri.to_owned()).or_default();
+                if entry.0.is_some() && version.is_some() && entry.0 != version {
+                    self.status = "Rust Analyzer returned conflicting document versions.".to_owned();
+                    return;
+                }
+                entry.0 = version.or(entry.0);
+                entry.1.extend(edits.iter().cloned());
+            }
+        }
+        if grouped.is_empty() {
+            self.status = "Rust Analyzer found no references to rename.".to_owned();
+            return;
+        }
+        if grouped.len() > 64 {
+            self.status = "This rename touches more than 64 files; narrow the operation before previewing.".to_owned();
+            return;
+        }
+        let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        let mut previews = Vec::with_capacity(grouped.len());
+        let mut addressed_paths = HashSet::new();
+        let mut total_bytes = 0usize;
+        for (uri, (lsp_version, edits)) in grouped {
+            let Some(absolute_path) = path_from_file_uri(&uri) else {
+                self.status = "Rust Analyzer returned a non-local file URI; rename was not applied.".to_owned();
+                return;
+            };
+            let canonical_path = absolute_path.canonicalize().unwrap_or(absolute_path);
+            if !canonical_path.starts_with(&canonical_root) {
+                self.status = "Rust Analyzer returned an edit outside this workspace; rename was not applied.".to_owned();
+                return;
+            }
+            if !addressed_paths.insert(canonical_path.clone()) {
+                self.status = "Rust Analyzer returned multiple edits for the same canonical file; rename was not applied.".to_owned();
+                return;
+            }
+            let Some((path, document)) = self.documents.iter().find(|(path, _)| {
+                let candidate = if path.is_absolute() { (*path).clone() } else { canonical_root.join(path) };
+                candidate.canonicalize().unwrap_or(candidate) == canonical_path
+            }) else {
+                self.status = format!("Open {} before previewing this rename; closed files are never changed implicitly.", canonical_path.display());
+                return;
+            };
+            let Some(snapshot_version) = versions.get(path) else {
+                self.status = format!("{} was opened after the rename began; request a fresh preview.", path.display());
+                return;
+            };
+            if document.version != *snapshot_version
+                || lsp_version.is_some_and(|version| version != document.version)
+                || (path == &request.path && document.version != request.document_version)
+            {
+                self.status = format!("{} changed while rename was being prepared; request a fresh preview.", path.display());
+                return;
+            }
+            let proposed_contents = match apply_text_edits(&document.contents, &edits) {
+                Ok(contents) => contents,
+                Err(error) => {
+                    self.status = format!("Rust Analyzer returned unsafe edits for {}: {error}", path.display());
+                    return;
+                }
+            };
+            total_bytes = total_bytes.saturating_add(proposed_contents.len());
+            if total_bytes > 4 * 1024 * 1024 {
+                self.status = "This rename preview exceeds 4 MiB; it was not prepared.".to_owned();
+                return;
+            }
+            if proposed_contents != document.contents {
+                previews.push(VersionedEditPreview {
+                    path: path.clone(),
+                    document_version: document.version,
+                    original_contents: document.contents.clone(),
+                    proposed_contents,
+                });
+            }
+        }
+        if previews.is_empty() {
+            self.status = "Rust Analyzer found no changes to apply.".to_owned();
+            return;
+        }
+        previews.sort_by(|left, right| left.path.cmp(&right.path));
+        self.edit_preview = None;
+        self.workspace_edit_preview = Some(previews);
+        self.status = "Review the multi-file Rust rename preview before applying it.".to_owned();
+    }
+
+    fn apply_edit_preview(&mut self) {
+        let Some(preview) = self.edit_preview.take() else {
+            return;
+        };
+        let Some(document) = self.documents.get_mut(&preview.path) else {
+            self.status = "The file closed before the edit could be applied.".to_owned();
+            return;
+        };
+        let version = match apply_versioned_edit(document, &preview) {
+            Ok(version) => version,
+            Err(EditPreviewApplyError::Stale) => {
+                self.status = "The file changed after preview; the edit was discarded. Preview it again.".to_owned();
+                return;
+            }
+            Err(EditPreviewApplyError::NoChange) => {
+                self.status = "The edit no longer changes this file.".to_owned();
+                return;
+            }
+            Err(EditPreviewApplyError::RevisionExhausted) => {
+                self.status = "The document revision is exhausted; the edit was not applied.".to_owned();
+                return;
+            }
+        };
+        self.cursor_offset = self.cursor_offset.min(preview.proposed_contents.chars().count());
+        self.cursor_position = cursor_position(&preview.proposed_contents, self.cursor_offset);
+        self.did_change_document(&preview.path, preview.proposed_contents, version);
+        self.status = format!("Applied formatting to {}. Save to write it to disk.", preview.path.display());
+    }
+
+    fn apply_workspace_edit_preview(&mut self) {
+        let Some(previews) = self.workspace_edit_preview.take() else {
+            return;
+        };
+        let mut updates = Vec::with_capacity(previews.len());
+        for preview in &previews {
+            let Some(document) = self.documents.get(&preview.path) else {
+                self.status = "A file closed before the refactor could be applied; no files changed.".to_owned();
+                return;
+            };
+            if document.version != preview.document_version || document.contents != preview.original_contents {
+                self.status = "A file changed after preview; no files changed. Prepare the refactor again.".to_owned();
+                return;
+            }
+            let Some(version) = document.version.checked_add(1) else {
+                self.status = "A document revision is exhausted; no files changed.".to_owned();
+                return;
+            };
+            updates.push((preview.path.clone(), preview.proposed_contents.clone(), version));
+        }
+        if updates.is_empty() {
+            self.status = "The refactor preview is empty.".to_owned();
+            return;
+        }
+        for (path, contents, version) in &updates {
+            if let Some(document) = self.documents.get_mut(path) {
+                document.contents.clone_from(contents);
+                document.version = *version;
+            }
+        }
+        for (path, contents, version) in updates {
+            if self.selected_file.as_ref() == Some(&path) {
+                self.cursor_offset = self.cursor_offset.min(contents.chars().count());
+                self.cursor_position = cursor_position(&contents, self.cursor_offset);
+            }
+            self.did_change_document(&path, contents, version);
+        }
+        self.status = format!("Applied the refactor to {} open files. Save each changed file to write it to disk.", previews.len());
     }
 
     fn apply_completion(&mut self, context: &egui::Context, index: usize) {
@@ -538,6 +1018,113 @@ impl IdeApp {
         }
     }
 
+    fn index_local_semantic_document(&mut self, path: &Path, version: u64, source: &str) {
+        if source.len() > vapor_gui_core::semantic::MAX_SEMANTIC_DOCUMENT_BYTES {
+            self.semantic_index
+                .replace_document(path.to_path_buf(), version, Vec::new());
+            if let Some(relative_path) = self
+                .workspace
+                .as_deref()
+                .and_then(|root| relative_workspace_path(root, path))
+            {
+                self.problems.replace_source_diagnostics(
+                    relative_path,
+                    vapor_gui_core::DiagnosticOrigin::Vapor,
+                    vec![semantic_source_limit_diagnostic()],
+                );
+            }
+            self.status = "Semantic indexing paused for this file because it exceeds 2 MiB; editing remains available.".to_owned();
+            return;
+        }
+        let extension = path.extension().and_then(|extension| extension.to_str());
+        let relative_path = self
+            .workspace
+            .as_deref()
+            .and_then(|root| relative_workspace_path(root, path));
+        match extension {
+            Some("toml") => {
+                match toml_semantics::parse_toml_semantic_objects(path, source) {
+                    Ok(objects) => {
+                        self.semantic_index
+                            .replace_document(path.to_path_buf(), version, objects);
+                        if let Some(relative_path) = relative_path {
+                            let diagnostics =
+                                toml_semantics::authored_manifest_diagnostics(path, source);
+                            if diagnostics.is_empty() {
+                                self.problems.remove_source_diagnostics(
+                                    &relative_path,
+                                    vapor_gui_core::DiagnosticOrigin::Vapor,
+                                );
+                            } else {
+                                self.problems.replace_source_diagnostics(
+                                    relative_path,
+                                    vapor_gui_core::DiagnosticOrigin::Vapor,
+                                    diagnostics,
+                                );
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        self.semantic_index
+                            .replace_document(path.to_path_buf(), version, Vec::new());
+                        if let Some(relative_path) = relative_path {
+                            self.problems.replace_source_diagnostics(
+                                relative_path,
+                                vapor_gui_core::DiagnosticOrigin::Vapor,
+                                vec![toml_parse_diagnostic(path, source, &error)],
+                            );
+                        }
+                    }
+                }
+            }
+            Some("xml") => {
+                match xml_semantics::parse_xml_semantic_objects(path, source) {
+                    Ok(objects) => {
+                        self.semantic_index.replace_document(path.to_path_buf(), version, objects);
+                        if let Some(relative_path) = relative_path {
+                            self.problems.remove_source_diagnostics(
+                                &relative_path,
+                                vapor_gui_core::DiagnosticOrigin::Vapor,
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        self.semantic_index.replace_document(path.to_path_buf(), version, Vec::new());
+                        if let Some(relative_path) = relative_path {
+                            self.problems.replace_source_diagnostics(
+                                relative_path,
+                                vapor_gui_core::DiagnosticOrigin::Vapor,
+                                vec![xml_parse_diagnostic(path, source, &error)],
+                            );
+                        }
+                    }
+                }
+            }
+            Some("rhai") => {
+                let objects = vapor_gui_core::rhai_semantics::parse_rhai_semantic_objects(path, source);
+                self.semantic_index
+                    .replace_document(path.to_path_buf(), version, objects);
+                if let Some(relative_path) = relative_path {
+                    let diagnostics =
+                        vapor_gui_core::rhai_semantics::rhai_structure_diagnostics(path, source);
+                    if diagnostics.is_empty() {
+                        self.problems.remove_source_diagnostics(
+                            &relative_path,
+                            vapor_gui_core::DiagnosticOrigin::Vapor,
+                        );
+                    } else {
+                        self.problems.replace_source_diagnostics(
+                            relative_path,
+                            vapor_gui_core::DiagnosticOrigin::Vapor,
+                            diagnostics,
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn did_open_document(&mut self, path: &Path) {
         if !self.language_server_ready || path.extension().is_none_or(|extension| extension != "rs")
         {
@@ -572,6 +1159,25 @@ impl IdeApp {
     }
 
     fn did_change_document(&mut self, path: &Path, text: String, version: i32) {
+        self.semantic_index.invalidate_document(path);
+        self.workspace_symbols.clear();
+        self.workspace_symbol_query = None;
+        if let Some(root) = self.workspace.as_deref()
+            && let Some(relative_path) = relative_workspace_path(root, path)
+        {
+            self.problems.remove_source_file(&relative_path);
+        }
+        if let Some((document_version, contents)) = self
+            .documents
+            .get(path)
+            .map(|document| (document.version as u64, document.contents.clone()))
+        {
+            self.index_local_semantic_document(path, document_version, &contents);
+        }
+        if self.selected_semantic.as_ref().is_some_and(|selected| &selected.id.document == path) {
+            self.selected_semantic = None;
+            self.rename_target = None;
+        }
         if !self.language_server_ready || path.extension().is_none_or(|extension| extension != "rs")
         {
             return;
@@ -582,6 +1188,7 @@ impl IdeApp {
             "method": "textDocument/didChange",
             "params": {"textDocument": {"uri": uri, "version": version}, "contentChanges": [{"text": text}]}
         }));
+        self.request_document_symbols(path);
     }
 
     fn did_close_document(&mut self, path: &Path) {
@@ -610,6 +1217,45 @@ impl IdeApp {
         }));
     }
 
+    fn handle_language_server_diagnostics(&mut self, mut batch: LanguageServerDiagnostics) {
+        let Some(path) = path_from_file_uri(&batch.uri) else {
+            return;
+        };
+        if batch.version.is_some_and(|version| {
+            self.documents
+                .get(&path)
+                .is_some_and(|document| document.version != version)
+        }) {
+            return;
+        }
+        let Some(root) = self.workspace.as_ref() else {
+            return;
+        };
+        let canonical_root = root.canonicalize().unwrap_or_else(|_| root.clone());
+        let canonical_path = path.canonicalize().unwrap_or(path);
+        let Ok(relative_path) = canonical_path.strip_prefix(&canonical_root) else {
+            return;
+        };
+        for diagnostic in &mut batch.diagnostics {
+            for span in diagnostic.primary.iter_mut().chain(diagnostic.related.iter_mut()) {
+                if let Some(path) = path_from_file_uri(&span.file) {
+                    span.file = path.to_string_lossy().into_owned();
+                }
+            }
+        }
+        self.problems.replace_source_diagnostics(
+            relative_path.to_path_buf(),
+            vapor_gui_core::DiagnosticOrigin::RustAnalyzer,
+            batch.diagnostics,
+        );
+        if batch.omitted_diagnostics > 0 {
+            self.status = format!(
+                "Rust Analyzer omitted {} malformed or excess diagnostics from one update.",
+                batch.omitted_diagnostics
+            );
+        }
+    }
+
     fn handle_language_server_message(&mut self, message: serde_json::Value) {
         let id = message.get("id").and_then(serde_json::Value::as_i64);
         if id == Some(1) {
@@ -633,6 +1279,10 @@ impl IdeApp {
                 let open = self.documents.keys().cloned().collect::<Vec<_>>();
                 for path in open {
                     self.did_open_document(&path);
+                    self.request_document_symbols(&path);
+                }
+                if self.explorer_symbols {
+                    self.request_workspace_symbols(&self.file_query.clone());
                 }
                 return;
             }
@@ -651,13 +1301,62 @@ impl IdeApp {
             let Some(result) = message.get("result") else {
                 return;
             };
+            if request.request == LspRequest::WorkspaceSymbols {
+                if self.workspace.as_deref() == Some(request.path.as_path())
+                    && request.query.as_deref() == Some(self.file_query.trim())
+                    && request
+                        .workspace_versions
+                        .as_ref()
+                        .is_some_and(|versions| workspace_versions_match(versions, &self.documents))
+                {
+                    self.workspace_symbols = rust_semantics::parse_workspace_symbols(
+                        result,
+                        &request.path,
+                    );
+                    self.status = format!(
+                        "Rust Analyzer found {} workspace symbols.",
+                        self.workspace_symbols.len()
+                    );
+                } else if request.query.as_deref() == Some(self.file_query.trim()) {
+                    self.status = "Open files changed during symbol search; search again for current results.".to_owned();
+                }
+                return;
+            }
+            if self.documents.get(&request.path).is_none_or(|document| document.version != request.document_version) {
+                return;
+            }
             match request.request {
                 LspRequest::Definition => self.navigate_to_definition(result),
-                LspRequest::References if self.selected_file.as_ref() == Some(&request.path) => {
-                    self.references = self
-                        .workspace
-                        .as_deref()
-                        .map_or_else(Vec::new, |root| reference_locations(result, root));
+                LspRequest::References => {
+                    let target_is_selected = reference_request_matches_selection(
+                        &request.path,
+                        request.semantic_target.as_ref(),
+                        request.cursor_offset,
+                        self.cursor_offset,
+                        self.selected_file.as_ref(),
+                        self.selected_semantic.as_ref(),
+                    );
+                    let document_is_current = self
+                        .documents
+                        .get(&request.path)
+                        .is_some_and(|document| document.version == request.document_version);
+                    let workspace_is_current = request
+                        .workspace_versions
+                        .as_ref()
+                        .is_some_and(|versions| workspace_versions_match(versions, &self.documents));
+                    if target_is_selected && document_is_current && workspace_is_current {
+                        (self.references, self.references_omitted) = self
+                            .workspace
+                            .as_deref()
+                            .map_or_else(|| (Vec::new(), 0), |root| reference_locations(result, root));
+                    }
+                }
+                LspRequest::Rename => {
+                    let target_is_selected = request.semantic_target.as_ref()
+                        == self.selected_semantic.as_ref();
+                    if target_is_selected {
+                        self.prepare_workspace_edit(&request, result);
+                    }
                 }
                 LspRequest::Hover if self.selected_file.as_ref() == Some(&request.path) => {
                     self.hover = hover_text(result);
@@ -666,22 +1365,62 @@ impl IdeApp {
                     self.completion_items = completion_items(result);
                 }
                 LspRequest::Formatting => self.apply_lsp_formatting(&request.path, result),
-                LspRequest::References | LspRequest::Hover | LspRequest::Completion => {}
+                LspRequest::DocumentSymbols => {
+                    if let Some(document) = self.documents.get(&request.path) {
+                        let parsed = rust_semantics::parse_semantic_document_symbols(
+                            result,
+                            &request.path,
+                            document.version as u64,
+                            &document.contents,
+                        );
+                        let symbol_count = parsed.objects.len();
+                        let source_too_large = document.contents.len()
+                            > vapor_gui_core::semantic::MAX_SEMANTIC_DOCUMENT_BYTES;
+                        if let Some(relative_path) = self
+                            .workspace
+                            .as_deref()
+                            .and_then(|workspace| relative_workspace_path(workspace, &request.path))
+                        {
+                            let mut diagnostics = rust_semantics::convention_diagnostics(
+                                &request.path,
+                                &parsed.objects,
+                            );
+                            if source_too_large {
+                                diagnostics.push(semantic_source_limit_diagnostic());
+                            }
+                            if diagnostics.is_empty() {
+                                self.problems.remove_source_diagnostics(
+                                    &relative_path,
+                                    vapor_gui_core::DiagnosticOrigin::Vapor,
+                                );
+                            } else {
+                                self.problems.replace_source_diagnostics(
+                                    relative_path,
+                                    vapor_gui_core::DiagnosticOrigin::Vapor,
+                                    diagnostics,
+                                );
+                            }
+                        }
+                        self.semantic_index.replace_document(
+                            request.path.clone(),
+                            document.version as u64,
+                            parsed.objects,
+                        );
+                        if parsed.truncated {
+                            self.status = if source_too_large {
+                                "Semantic indexing paused for this file because it exceeds 2 MiB; editing remains available.".to_owned()
+                            } else {
+                                format!("Rust Analyzer returned a large document; indexed the first {symbol_count} semantic objects. Narrow the file or query to inspect the rest.")
+                            };
+                        }
+                    }
+                }
+                LspRequest::WorkspaceSymbols => {}
+                LspRequest::Hover | LspRequest::Completion => {}
             }
             return;
         }
-        let Some((path, diagnostics)) = parse_diagnostics(&message) else {
-            return;
-        };
-        let Some(root) = self.workspace.as_ref() else {
-            return;
-        };
-        let canonical_root = root.canonicalize().unwrap_or_else(|_| root.clone());
-        let Ok(relative_path) = path.strip_prefix(canonical_root) else {
-            return;
-        };
-        self.diagnostics
-            .insert(relative_path.to_path_buf(), diagnostics);
+
     }
 
     fn send(&mut self, action: ClientAction, pending: PendingAction) {
@@ -801,6 +1540,10 @@ impl IdeApp {
             return;
         }
         self.did_close_document(path);
+        self.semantic_index.invalidate_document(path);
+        if self.selected_semantic.as_ref().is_some_and(|selected| &selected.id.document == path) {
+            self.selected_semantic = None;
+        }
         self.documents.remove(path);
         if self.selected_file.as_deref() == Some(path) {
             self.selected_file = self.documents.keys().next().cloned();
@@ -848,26 +1591,6 @@ impl IdeApp {
         );
     }
 
-    fn create_workspace_file(&mut self) {
-        let path = self.new_file_path.trim();
-        if path.is_empty() {
-            self.status = "Enter a file name inside the project.".to_owned();
-            return;
-        }
-        if self.documents.values().any(Document::is_dirty) {
-            self.status = "Save your open files before creating a file.".to_owned();
-            return;
-        }
-        self.send(
-            ClientAction::Workspace(WorkspaceAction::CreateFile {
-                path: path.to_owned(),
-                contents: String::new(),
-            }),
-            PendingAction::CreateFile,
-        );
-        self.new_file_dialog = false;
-    }
-
     fn poll_service(&mut self) {
         while let Some(client) = self.service.as_mut() {
             let frame = match client.try_recv() {
@@ -884,17 +1607,20 @@ impl IdeApp {
                 ProtocolFrame::Response(response) => {
                     if self.console_requests.remove(&response.request_id.0) {
                         if let Some(error) = response.error {
-                            self.console.history.push(ConsoleRecord::new(
-                                std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .map(|duration| {
-                                        duration.as_millis().min(u64::MAX as u128) as u64
-                                    })
-                                    .unwrap_or_default(),
-                                ConsoleLevel::Error,
-                                "vapor",
-                                error.message,
-                            ));
+                            self.console.history.push(
+                                ConsoleRecord::new(
+                                    std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|duration| {
+                                            duration.as_millis().min(u64::MAX as u128) as u64
+                                        })
+                                        .unwrap_or_default(),
+                                    ConsoleLevel::Error,
+                                    "vapor",
+                                    error.message,
+                                )
+                                .field("origin", "ide"),
+                            );
                         }
                         continue;
                     }
@@ -925,7 +1651,7 @@ impl IdeApp {
                             self.save_queue.clear();
                         }
                         if matches!(pending.action, PendingAction::CreateFile) {
-                            self.new_file_dialog = true;
+                            self.authoring.new_file_dialog = true;
                         }
                         self.pending = None;
                         continue;
@@ -935,46 +1661,54 @@ impl IdeApp {
                         self.workspace_input = root.display().to_string();
                         self.files.clear();
                         self.file_tree = WorkspaceFileTree::default();
+                        self.rust_crate_roots.clear();
                         self.documents.clear();
+                        self.semantic_index = SemanticWorkspaceIndex::default();
+                        self.selected_semantic = None;
                         self.selected_file = None;
                         self.start_language_server();
                         self.status = format!("Opened {}", root.display());
                         self.pending = None;
                         self.request_file_list();
                     } else {
-                        pending.operation_id = response
-                            .snapshot
-                            .active_operation
-                            .as_ref()
-                            .map(|operation| operation.id.clone());
+                        // The snapshot's primary operation can belong to another
+                        // frontend. File results correlate to this request's
+                        // accepted operation, never whichever operation is first.
+                        pending.operation_id = response.operation_id.clone();
                     }
                 }
                 ProtocolFrame::Event(ClientEvent::OperationOutput(output)) => {
-                    for line in output.text.lines().filter(|line| !line.trim().is_empty()) {
-                        let source = if output.source.is_empty() {
-                            "command"
-                        } else {
-                            &output.source
-                        };
-                        let mut record = ConsoleRecord::new(
-                            output.timestamp_unix_ms,
-                            output.level,
-                            source,
-                            line,
-                        )
-                        .target(output.action.clone())
-                        .field("operation", output.id.clone())
-                        .field(
-                            "stream",
-                            format!("{:?}", output.stream).to_ascii_lowercase(),
-                        );
-                        if let Some(process) = &output.process {
-                            record = record.field("process", process.clone());
-                        }
+                    for record in vapor_gui_core::console::records_from_operation_output(&output) {
                         self.console.history.push(record);
+                    }
+                    if let (Some(root), Some(diagnostic)) =
+                        (self.workspace.as_deref(), output.diagnostic)
+                    {
+                        let path = diagnostic
+                            .primary
+                            .as_ref()
+                            .or_else(|| diagnostic.related.first())
+                            .and_then(|span| {
+                                workspace_diagnostic_path(root, &span.file, &self.files)
+                            });
+                        self.problems.push_build(
+                            &output.id,
+                            ProblemRow {
+                                path,
+                                operation: Some(output.action.clone()),
+                                diagnostic,
+                            },
+                        );
                     }
                 }
                 ProtocolFrame::Event(ClientEvent::OperationChanged(event)) => {
+                    if matches!(event.status, OperationStatus::Running)
+                        && (event.phase == vapor_client_protocol::OperationPhase::Building
+                            || (event.phase == vapor_client_protocol::OperationPhase::Queued
+                                && operation_produces_build_diagnostics(&event.action)))
+                    {
+                        self.problems.begin_build(&event.id);
+                    }
                     if let Some(pending) = self.pending.as_mut()
                         && pending.operation_id.as_deref() == Some(event.id.as_str())
                     {
@@ -1011,6 +1745,9 @@ impl IdeApp {
                 ProtocolFrame::Event(ClientEvent::LanguageServerMessage(message)) => {
                     self.handle_language_server_message(message);
                 }
+                ProtocolFrame::Event(ClientEvent::LanguageServerDiagnostics(diagnostics)) => {
+                    self.handle_language_server_diagnostics(*diagnostics);
+                }
                 ProtocolFrame::Event(ClientEvent::LanguageServerStatus { status, message }) => {
                     self.language_server_ready =
                         status == vapor_client_protocol::LanguageServerStatus::Ready;
@@ -1043,12 +1780,10 @@ impl IdeApp {
             .lines()
             .filter(|line| !line.trim().is_empty())
         {
-            self.console.history.push(ConsoleRecord::new(
-                timestamp,
-                ConsoleLevel::Info,
-                "ide",
-                line,
-            ));
+            self.console.history.push(
+                ConsoleRecord::new(timestamp, ConsoleLevel::Info, "ide", line)
+                    .field("origin", "ide"),
+            );
         }
     }
 
@@ -1061,6 +1796,7 @@ impl IdeApp {
                 self.files = files.into_iter().map(PathBuf::from).collect();
                 self.files.sort();
                 self.file_tree = WorkspaceFileTree::new(&self.files);
+                self.rust_crate_roots = rust_crate_roots(&self.files);
                 self.status = format!("{} files in workspace.", self.files.len());
                 self.pending = None;
             }
@@ -1081,7 +1817,15 @@ impl IdeApp {
                         version: 1,
                     },
                 );
+                if let Some((version, contents)) = self
+                    .documents
+                    .get(&path)
+                    .map(|document| (document.version as u64, document.contents.clone()))
+                {
+                    self.index_local_semantic_document(&path, version, &contents);
+                }
                 self.did_open_document(&path);
+                self.request_document_symbols(&path);
                 self.status = "File opened.".to_owned();
                 self.pending = None;
             }
@@ -1121,8 +1865,8 @@ impl IdeApp {
                     self.file_tree = WorkspaceFileTree::new(&self.files);
                 }
                 self.pending = None;
-                self.new_file_path.clear();
-                self.new_file_dialog = false;
+                self.authoring.new_file_path.clear();
+                self.authoring.new_file_dialog = false;
                 self.open_file(path);
             }
             _ => {}
@@ -1144,7 +1888,15 @@ impl IdeApp {
 
     fn header(&mut self, ui: &mut egui::Ui) {
         let mut run_action = None;
+        let mut run_project = false;
         let mut create_file = false;
+        let mut create_rust_item = false;
+        let mut open_project = false;
+        let mut save_requested = false;
+        let mut save_all_requested = false;
+        let mut close_file = None;
+        let mut find_requested = false;
+        let mut find_next = None;
         let dirty_count = self
             .documents
             .values()
@@ -1157,7 +1909,128 @@ impl IdeApp {
             "Open project"
         };
         ui.horizontal(|ui| {
-            ui.heading("Vapor IDE");
+            ui.menu_button("File", |ui| {
+                if ui.button("Open project…").clicked() {
+                    open_project = true;
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(
+                        self.workspace.is_some() && self.pending.is_none(),
+                        egui::Button::new("New empty file…"),
+                    )
+                    .clicked()
+                {
+                    create_file = true;
+                    ui.close();
+                }
+                let canonical_module_open = self.selected_file.as_deref()
+                    .is_some_and(|path| canonical_rust_item_kind(path, &self.rust_crate_roots).is_some());
+                if ui.add_enabled(
+                    canonical_module_open && self.pending.is_none(),
+                    egui::Button::new("New Rust item…"),
+                ).on_disabled_hover_text("Open a canonical Rust module first.").clicked() {
+                    create_rust_item = true;
+                    ui.close();
+                }
+                ui.separator();
+                if ui
+                    .add_enabled(
+                        self.pending.is_none() && dirty_count > 0,
+                        egui::Button::new("Save"),
+                    )
+                    .clicked()
+                {
+                    save_requested = true;
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(
+                        self.pending.is_none() && dirty_count > 0,
+                        egui::Button::new("Save all"),
+                    )
+                    .clicked()
+                {
+                    save_all_requested = true;
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(
+                        self.selected_file.is_some() && self.pending.is_none(),
+                        egui::Button::new("Close file"),
+                    )
+                    .clicked()
+                {
+                    close_file = self.selected_file.clone();
+                    ui.close();
+                }
+            });
+            ui.menu_button("Edit", |ui| {
+                if ui
+                    .add_enabled(self.selected_file.is_some(), egui::Button::new("Find…"))
+                    .clicked()
+                {
+                    find_requested = true;
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(self.find_open, egui::Button::new("Find next"))
+                    .clicked()
+                {
+                    find_next = Some(false);
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(self.find_open, egui::Button::new("Find previous"))
+                    .clicked()
+                {
+                    find_next = Some(true);
+                    ui.close();
+                }
+            });
+            ui.menu_button("View", |ui| {
+                ui.checkbox(&mut self.inspector_open, "Inspector");
+                ui.checkbox(&mut self.bottom_open, "Bottom panel");
+            });
+            ui.menu_button("Run", |ui| {
+                if ui
+                    .add_enabled(
+                        self.workspace.is_some() && self.pending.is_none() && !has_unsaved_edits,
+                        egui::Button::new("Run project"),
+                    )
+                    .clicked()
+                {
+                    run_project = true;
+                    ui.close();
+                }
+                ui.separator();
+                for (label, operation) in [
+                    ("Check", WorkspaceToolOperation::Check),
+                    ("Test", WorkspaceToolOperation::Test),
+                    ("Build", WorkspaceToolOperation::Build),
+                    ("Format", WorkspaceToolOperation::Format),
+                ] {
+                    if ui
+                        .add_enabled(
+                            self.workspace.is_some() && self.pending.is_none(),
+                            egui::Button::new(label),
+                        )
+                        .clicked()
+                    {
+                        run_action = Some(operation);
+                        ui.close();
+                    }
+                }
+            });
+            ui.menu_button("Help", |ui| {
+                if ui.button("About Vapor IDE").clicked() {
+                    self.about_open = true;
+                    ui.close();
+                }
+                ui.weak(&self.language_server_status);
+            });
+            ui.separator();
+            ui.strong("Vapor IDE");
             ui.separator();
             if let Some(root) = &self.workspace {
                 ui.strong(root.file_name().unwrap_or_default().to_string_lossy());
@@ -1198,40 +2071,6 @@ impl IdeApp {
                         self.save_file();
                     }
                 }
-                ui.menu_button("View", |ui| {
-                    ui.checkbox(&mut self.inspector_open, "Inspector");
-                    ui.checkbox(&mut self.bottom_open, "Bottom panel");
-                });
-                ui.menu_button("Actions", |ui| {
-                    if ui
-                        .add_enabled(
-                            self.workspace.is_some() && self.pending.is_none(),
-                            egui::Button::new("New file..."),
-                        )
-                        .clicked()
-                    {
-                        create_file = true;
-                        ui.close();
-                    }
-                    ui.separator();
-                    for (label, operation) in [
-                        ("Check", WorkspaceToolOperation::Check),
-                        ("Test", WorkspaceToolOperation::Test),
-                        ("Build", WorkspaceToolOperation::Build),
-                        ("Format", WorkspaceToolOperation::Format),
-                    ] {
-                        if ui
-                            .add_enabled(
-                                self.workspace.is_some() && self.pending.is_none(),
-                                egui::Button::new(label),
-                            )
-                            .clicked()
-                        {
-                            run_action = Some(operation);
-                            ui.close();
-                        }
-                    }
-                });
                 if ui
                     .add_enabled(self.pending.is_none(), egui::Button::new(project_action))
                     .clicked()
@@ -1243,8 +2082,33 @@ impl IdeApp {
         if let Some(operation) = run_action {
             self.run_workspace_tool(operation);
         }
+        if run_project {
+            self.run_default_configuration();
+        }
+        if open_project {
+            self.project_switcher_open = true;
+        }
+        if save_requested {
+            self.save_file();
+        }
+        if save_all_requested {
+            self.save_all();
+        }
+        if let Some(path) = close_file {
+            self.close_document(&path);
+        }
+        if find_requested {
+            self.find_open = true;
+            self.focus_find_query = true;
+        }
+        if let Some(previous) = find_next {
+            self.find_navigation = Some(previous);
+        }
         if create_file {
-            self.new_file_dialog = true;
+            self.authoring.new_file_dialog = true;
+        }
+        if create_rust_item {
+            self.open_semantic_rust_item_dialog();
         }
         ui.separator();
     }
@@ -1441,11 +2305,24 @@ impl IdeApp {
         ui.horizontal(|ui| {
             ui.heading("Explorer");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.weak(format!("{} files", self.file_tree.matching_file_count("")));
+                if self.explorer_symbols {
+                    ui.weak(format!("{} open", self.semantic_index.documents().count()));
+                } else {
+                    ui.weak(format!("{} files", self.file_tree.matching_file_count("")));
+                }
             });
         });
+        ui.horizontal(|ui| {
+            if ui.selectable_label(!self.explorer_symbols, "Files").clicked() {
+                self.explorer_symbols = false;
+            }
+            if ui.selectable_label(self.explorer_symbols, "Structure").clicked() {
+                self.explorer_symbols = true;
+            }
+        });
         let search = ui.add(
-            egui::TextEdit::singleline(&mut self.file_query).hint_text("Filter files | Ctrl/Cmd+P"),
+            egui::TextEdit::singleline(&mut self.file_query)
+                .hint_text(if self.explorer_symbols { "Search Rust workspace + open-file structure" } else { "Filter files | Ctrl/Cmd+P" }),
         );
         if self.focus_file_query {
             search.request_focus();
@@ -1455,35 +2332,142 @@ impl IdeApp {
             self.file_query.clear();
         }
         let filter = self.file_query.trim().to_lowercase();
-        let mut requested_file = None;
-        egui::ScrollArea::vertical()
-            .id_salt("ide-project-tree")
-            .show(ui, |ui| {
-                if self.file_tree.matching_file_count(&filter) == 0 {
-                    ui.weak(if filter.is_empty() {
-                        "No files in this project."
-                    } else {
-                        "No files match this filter."
-                    });
-                } else {
-                    draw_file_tree(
-                        ui,
-                        &self.file_tree,
-                        Path::new(""),
-                        0,
-                        &FileTreeView {
-                            files: &self.files,
-                            documents: &self.documents,
-                            selected: self.selected_file.as_ref(),
-                            enabled: self.pending.is_none(),
-                            filter: &filter,
-                        },
-                        &mut requested_file,
-                    );
+        if self.explorer_symbols {
+            self.semantic_match_cache
+                .prepare(&self.semantic_index, &filter);
+            let symbol_query = self.file_query.trim().to_owned();
+            self.request_workspace_symbols(&symbol_query);
+            let mut requested_symbol = None;
+            let mut requested_location = None;
+            let mut outline_budget = semantic_view::SemanticRenderBudget::default();
+            egui::ScrollArea::vertical()
+                .id_salt("ide-semantic-symbol-tree")
+                .show(ui, |ui| {
+                    if !filter.is_empty() {
+                        ui.strong("Workspace Rust declarations");
+                        if !self.language_server_ready {
+                            ui.weak("Rust Analyzer will search the project when it is ready.");
+                        } else if self.workspace_symbol_query.as_deref()
+                            != Some(self.file_query.trim())
+                        {
+                            ui.weak("Searching workspace symbols…");
+                        } else if self.workspace_symbols.is_empty() {
+                            ui.weak("No workspace symbols match this search.");
+                        }
+                        for object in &self.workspace_symbols {
+                            let label = format!("{}  {}", object.kind.label(), object.name);
+                            let response = ui.selectable_label(false, label);
+                            response.clone().on_hover_text(format!(
+                                "{} · {}:{}",
+                                object.id.qualified_name(),
+                                object.id.document.display(),
+                                object.range.start.line.saturating_add(1),
+                            ));
+                            if response.clicked() {
+                                requested_location = Some((
+                                    object.id.document.clone(),
+                                    object.range.start.line as usize,
+                                    object.range.start.character as usize,
+                                ));
+                            }
+                        }
+                    }
+                    let outline_document_count = self
+                        .semantic_index
+                        .documents()
+                        .filter(|document| semantic_view::has_semantic_outline(&document.objects))
+                        .count();
+                    ui.weak(semantic_view::semantic_explorer_guidance(
+                        outline_document_count,
+                        self.language_server_ready,
+                    ));
+                    if !filter.is_empty() {
+                        ui.separator();
+                        ui.strong("Open-file outlines");
+                    }
+                    if outline_document_count == 0 {
+                        ui.weak("No open-file outlines yet.");
+                    }
+                    for document in self.semantic_index.documents() {
+                        egui::CollapsingHeader::new(document.path.display().to_string())
+                            .id_salt(("ide-symbol-file", &document.path))
+                            .default_open(true)
+                            .show(ui, |ui| {
+                                if !semantic_view::has_semantic_outline(&document.objects) {
+                                    ui.weak("No semantic outline is available for this document.");
+                                } else {
+                                    semantic_view::draw_semantic_outline(
+                                        ui,
+                                        &document.objects,
+                                        document.version,
+                                        self.semantic_match_cache
+                                            .get(&document.path)
+                                            .expect("open semantic documents have cached filters"),
+                                        self.selected_semantic.as_ref(),
+                                        &mut requested_symbol,
+                                        &mut outline_budget,
+                                    );
+                                }
+                            });
+                    }
+                    if outline_budget.was_truncated() {
+                        ui.weak(format!(
+                            "Outline display is capped at {} visible objects. Filter the structure to reach more matches.",
+                            semantic_view::MAX_VISIBLE_SEMANTIC_OBJECTS,
+                        ));
+                    }
+                });
+            if let Some(reference) = requested_symbol {
+                if self.selected_semantic.as_ref() != Some(&reference) {
+                    self.references.clear();
+                    self.references_omitted = 0;
+                    self.rename_target = None;
                 }
-            });
-        if let Some(path) = requested_file {
-            self.open_file(path);
+                self.selected_semantic = Some(reference.clone());
+                let position = reference_range(&self.semantic_index, &reference).unwrap_or_default().start;
+                self.navigate_to_workspace_location(
+                    &reference.id.document,
+                    position.line as usize,
+                    position.character as usize,
+                );
+            }
+            if let Some((path, line, character)) = requested_location {
+                self.selected_semantic = None;
+                self.navigate_to_workspace_location(&path, line, character);
+            }
+        } else {
+            let mut requested_file = None;
+            egui::ScrollArea::vertical()
+                .id_salt("ide-project-tree")
+                .show(ui, |ui| {
+                    if self.file_tree.matching_file_count(&filter) == 0 {
+                        ui.weak(if filter.is_empty() {
+                            "No files in this project."
+                        } else {
+                            "No files match this filter."
+                        });
+                    } else {
+                        draw_file_tree(
+                            ui,
+                            &self.file_tree,
+                            Path::new(""),
+                            0,
+                            &FileTreeView {
+                                files: &self.files,
+                                documents: &self.documents,
+                                selected: self.selected_file.as_ref(),
+                                enabled: self.pending.is_none(),
+                                filter: &filter,
+                                rust_crate_roots: &self.rust_crate_roots,
+                            },
+                            &mut requested_file,
+                        );
+                    }
+                });
+            if let Some(path) = requested_file {
+                self.selected_semantic = None;
+                self.open_file(path);
+            }
         }
     }
 
@@ -1545,13 +2529,27 @@ impl IdeApp {
             && let Some((_, line, character)) = self.pending_navigation.take()
             && let Some(document) = self.documents.get(&path)
         {
-            let offset = position_to_byte_offset(&document.contents, line, character);
-            vapor_gui_core::code_editor::select_range(
-                &context,
-                &path,
-                &document.contents,
-                offset..offset,
-            );
+            if let Some(offset) = position_to_byte_offset(&document.contents, line, character) {
+                let semantic_range = self
+                    .selected_semantic
+                    .as_ref()
+                    .filter(|reference| reference.id.document == path)
+                    .and_then(|reference| {
+                        semantic_object_byte_range(
+                            &self.semantic_index,
+                            reference,
+                            &document.contents,
+                        )
+                    });
+                vapor_gui_core::code_editor::select_range(
+                    &context,
+                    &path,
+                    &document.contents,
+                    semantic_range.unwrap_or(offset..offset),
+                );
+            } else {
+                self.status = "The language server returned an invalid source position.".to_owned();
+            }
         }
         let mut find_action = self.find_navigation.take();
         let mut close_find = false;
@@ -1753,6 +2751,154 @@ impl IdeApp {
     fn draw_inspector(&mut self, ui: &mut egui::Ui) {
         ui.heading("Inspector");
         ui.separator();
+        if let Some(reference) = self.selected_semantic.clone()
+            && let Some(object) = self.semantic_index.resolve(&reference).cloned()
+        {
+            ui.strong(object.kind.label());
+            ui.heading(&object.name);
+            ui.monospace(object.id.qualified_name());
+            ui.weak(format!("{} · document revision {}", object.id.document.display(), reference.document_version));
+            if let Some(detail) = &object.detail {
+                ui.add_space(6.0);
+                ui.label(detail);
+            }
+            if let Some(status) = semantic_view::semantic_convention_status(&object) {
+                ui.colored_label(egui::Color32::LIGHT_BLUE, status);
+            }
+            let mut diagnostic_navigation = None;
+            if let Some(relative_path) = self.workspace.as_deref().and_then(|root| {
+                relative_workspace_path(root, &object.id.document)
+            }) {
+                let diagnostics = self.problems.for_semantic_range(&relative_path, object.range);
+                if !diagnostics.is_empty() {
+                    ui.add_space(8.0);
+                    ui.strong(format!("Problems · {}", diagnostics.len()));
+                    for diagnostic in diagnostics {
+                        let severity = match diagnostic.severity {
+                            vapor_gui_core::DiagnosticSeverity::Error => ("Error", egui::Color32::LIGHT_RED),
+                            vapor_gui_core::DiagnosticSeverity::Warning => ("Warning", egui::Color32::YELLOW),
+                            vapor_gui_core::DiagnosticSeverity::Information => ("Info", egui::Color32::LIGHT_BLUE),
+                            vapor_gui_core::DiagnosticSeverity::Hint => ("Hint", egui::Color32::GRAY),
+                        };
+                        ui.horizontal_wrapped(|ui| {
+                            ui.colored_label(severity.1, severity.0);
+                            ui.weak(format!("{:?}", diagnostic.origin));
+                            if let Some(code) = &diagnostic.code {
+                                ui.monospace(code);
+                            }
+                            if ui.small_button("Open").clicked()
+                                && let Some(span) = &diagnostic.primary
+                            {
+                                diagnostic_navigation = Some((
+                                    object.id.document.clone(),
+                                    span.start_line.saturating_sub(1) as usize,
+                                    span.start_column.saturating_sub(1) as usize,
+                                ));
+                            }
+                        });
+                        ui.label(&diagnostic.message);
+                    }
+                }
+            }
+            if !object.attributes.is_empty() {
+                ui.add_space(10.0);
+                ui.strong("Attributes");
+                for attribute in &object.attributes {
+                    ui.monospace(attribute);
+                }
+            }
+            let mut selected_member = None;
+            if !object.children.is_empty() {
+                ui.add_space(10.0);
+                ui.strong("Members");
+                semantic_view::draw_semantic_members(
+                    ui,
+                    &object.children,
+                    reference.document_version,
+                    self.selected_semantic.as_ref(),
+                    &mut selected_member,
+                );
+            }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let can_rename = self.language_server_ready
+                    && object.id.domain == "rust"
+                    && object.id.document.extension().is_some_and(|extension| extension == "rs");
+                if ui
+                    .add_enabled(can_rename, egui::Button::new("Rename…"))
+                    .on_hover_text("Preview a Rust Analyzer rename across open workspace files")
+                    .clicked()
+                {
+                    self.rename_target = Some(reference.clone());
+                    self.rename_input.clone_from(&object.name);
+                }
+                if ui.button("Go to declaration").clicked() {
+                    self.navigate_to_workspace_location(
+                        &object.id.document,
+                        object.selection_range.start.line as usize,
+                        object.selection_range.start.character as usize,
+                    );
+                }
+                let can_query_references = self.language_server_ready
+                    && self.documents.contains_key(&object.id.document)
+                    && object.id.document.extension().is_some_and(|extension| extension == "rs");
+                if ui
+                    .add_enabled(can_query_references, egui::Button::new("Find references"))
+                    .on_hover_text("Find references to this declaration")
+                    .clicked()
+                {
+                    self.request_lsp_at_position(
+                        &object.id.document,
+                        serde_json::json!({
+                            "line": object.selection_range.start.line,
+                            "character": object.selection_range.start.character
+                        }),
+                        "textDocument/references",
+                        LspRequest::References,
+                        Some(reference.clone()),
+                    );
+                }
+            });
+            if self.rename_target.as_ref() == Some(&reference) {
+                let mut submit_rename = false;
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.rename_input)
+                            .hint_text("New Rust identifier")
+                            .desired_width(150.0),
+                    );
+                    if ui.button("Preview").clicked() {
+                        submit_rename = true;
+                    }
+                    if ui.small_button("Cancel").clicked() {
+                        self.rename_target = None;
+                    }
+                });
+                if submit_rename {
+                    let new_name = self.rename_input.clone();
+                    self.request_lsp_rename(reference.clone(), &new_name);
+                }
+            }
+            if let Some((path, line, character)) = diagnostic_navigation {
+                self.navigate_to_workspace_location(&path, line, character);
+            }
+            if let Some(member) = selected_member {
+                if self.selected_semantic.as_ref() != Some(&member) {
+                    self.references.clear();
+                    self.references_omitted = 0;
+                    self.rename_target = None;
+                }
+                self.selected_semantic = Some(member.clone());
+                if let Some(range) = reference_range(&self.semantic_index, &member) {
+                    self.navigate_to_workspace_location(
+                        &member.id.document,
+                        range.start.line as usize,
+                        range.start.character as usize,
+                    );
+                }
+            }
+            ui.separator();
+        }
         if let Some(path) = &self.selected_file {
             ui.label("File");
             ui.monospace(path.display().to_string());
@@ -1765,8 +2911,7 @@ impl IdeApp {
             ui.label("Language tooling");
             ui.label(&self.language_server_status);
             ui.label("Rust Analyzer runs through the shared Vapor service and pinned toolchain.");
-            let issue_count = self.diagnostics.values().map(Vec::len).sum::<usize>();
-            ui.label(format!("{issue_count} workspace diagnostics"));
+            ui.label(format!("{} workspace problems", self.problems.count()));
             if let Some(hover) = &self.hover {
                 ui.add_space(8.0);
                 ui.label("Hover");
@@ -1774,27 +2919,30 @@ impl IdeApp {
             }
             if !self.references.is_empty() {
                 ui.add_space(8.0);
-                ui.label(format!("References | {}", self.references.len()));
-                let references = self.references.clone();
+                ui.label(if self.references_omitted == 0 {
+                    format!("References | {}", self.references.len())
+                } else {
+                    format!("References | {} shown · {} omitted", self.references.len(), self.references_omitted)
+                });
                 let mut selected_reference = None;
                 egui::ScrollArea::vertical()
                     .id_salt("ide-references")
                     .max_height(180.0)
                     .show(ui, |ui| {
-                        for location in references {
+                        for location in &self.references {
                             if ui
                                 .selectable_label(
                                     false,
                                     format!(
                                         "{}:{}:{}",
                                         location.path.display(),
-                                        location.line,
-                                        location.character
+                                        location.line.saturating_add(1),
+                                        location.character.saturating_add(1)
                                     ),
                                 )
                                 .clicked()
                             {
-                                selected_reference = Some(location);
+                                selected_reference = Some(location.clone());
                             }
                         }
                     });
@@ -1812,7 +2960,7 @@ impl IdeApp {
     }
 
     fn draw_bottom(&mut self, ui: &mut egui::Ui) {
-        let diagnostic_count = self.diagnostics.values().map(Vec::len).sum::<usize>();
+        let diagnostic_count = self.problems.count();
         ui.horizontal(|ui| {
             if ui
                 .selectable_label(
@@ -1842,42 +2990,73 @@ impl IdeApp {
             }
         } else {
             let mut selected_diagnostic = None;
+            let row_height = ui
+                .text_style_height(&egui::TextStyle::Body)
+                .max(ui.spacing().interact_size.y);
             egui::ScrollArea::vertical()
                 .id_salt("ide-diagnostics")
-                .max_height(150.0)
-                .show(ui, |ui| {
-                    for (path, diagnostics) in &self.diagnostics {
-                        for diagnostic in diagnostics {
-                            let marker = match diagnostic.severity {
-                                Some(1) => "Error",
-                                Some(2) => "Warning",
-                                Some(3) => "Info",
-                                Some(4) => "Hint",
-                                _ => "Diagnostic",
-                            };
-                            if ui
-                                .selectable_label(
-                                    false,
-                                    format!(
-                                        "{marker}  {}:{}:{}  {}",
-                                        path.display(),
-                                        diagnostic.line,
-                                        diagnostic.character,
-                                        diagnostic.message
-                                    ),
-                                )
-                                .clicked()
-                            {
-                                selected_diagnostic = Some(path.clone());
+                .auto_shrink([false, false])
+                .show_rows(ui, row_height, diagnostic_count, |ui, visible_rows| {
+                    for ProblemRowRef { path, operation, diagnostic } in
+                        self.problems.rows_in_range(visible_rows)
+                    {
+                        let marker = match diagnostic.severity {
+                            vapor_gui_core::DiagnosticSeverity::Error => "Error",
+                            vapor_gui_core::DiagnosticSeverity::Warning => "Warning",
+                            vapor_gui_core::DiagnosticSeverity::Information => "Info",
+                            vapor_gui_core::DiagnosticSeverity::Hint => "Hint",
+                        };
+                        let span = diagnostic.primary.as_ref();
+                        let navigation_span = span.or_else(|| diagnostic.related.first());
+                        let line = navigation_span.map_or(1, |span| span.start_line as usize);
+                        let column = navigation_span.map_or(1, |span| span.start_column as usize);
+                        let code = diagnostic.code.as_deref().map_or(String::new(), |code| format!(" [{code}]"));
+                        let origin = diagnostic_origin_label(diagnostic.origin);
+                        let operation = operation
+                            .filter(|operation| !operation.is_empty())
+                            .map_or_else(String::new, |operation| format!(" · {operation}"));
+                        let location = match (path, navigation_span) {
+                            (Some(path), Some(span)) => format!(
+                                "{}:{}:{}", path.display(), span.start_line, span.start_column
+                            ),
+                            (Some(path), None) => path.display().to_string(),
+                            (None, Some(span)) => format!(
+                                "{}:{}:{}", span.file, span.start_line, span.start_column
+                            ),
+                            (None, None) => "workspace".to_owned(),
+                        };
+                        let response = ui.selectable_label(
+                            false,
+                            format!("{marker} · {origin}{operation}{code}  {location}  {}", diagnostic.message),
+                        );
+                        let mut details = diagnostic.message.clone();
+                        for related in &diagnostic.related {
+                            details.push_str(&format!(
+                                "\n{}:{}:{} {}",
+                                related.file,
+                                related.start_line,
+                                related.start_column,
+                                related.label.as_deref().unwrap_or("related")
+                            ));
+                        }
+                        details.push_str(&format!("\n\nRaw diagnostic\n{}", diagnostic.raw_payload));
+                        let response = response.on_hover_text(details);
+                        if response.clicked() {
+                            if let Some(path) = path {
+                                selected_diagnostic = Some((path.clone(), line, column));
                             }
                         }
                     }
                 });
-            if let Some(path) = selected_diagnostic {
-                self.open_file(path);
+            if let Some((path, line, column)) = selected_diagnostic {
+                self.navigate_to_workspace_location(
+                    &path,
+                    line.saturating_sub(1),
+                    column.saturating_sub(1),
+                );
             }
             if diagnostic_count == 0 {
-                ui.weak("Rust Analyzer and build diagnostics appear here.");
+                ui.weak("Rust Analyzer and managed build problems appear here.");
             }
         }
     }
@@ -1999,7 +3178,7 @@ impl eframe::App for IdeApp {
             && self.workspace.is_some()
             && self.pending.is_none()
         {
-            self.new_file_dialog = true;
+            self.authoring.new_file_dialog = true;
         }
         egui::Panel::top("ide-toolbar").show(ui, |ui| self.header(ui));
         egui::Panel::bottom("ide-status").show(ui, |ui| {
@@ -2013,6 +3192,20 @@ impl eframe::App for IdeApp {
                 }
             });
         });
+        if self.about_open {
+            egui::Window::new("About Vapor IDE")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .open(&mut self.about_open)
+                .show(ui.ctx(), |ui| {
+                    ui.heading("Vapor IDE");
+                    ui.label("A Vapor-managed workspace editor and Rust development environment.");
+                    ui.label(
+                        "Rust Analyzer and project tools run through the shared Vapor service.",
+                    );
+                });
+        }
         if self.workspace.is_none() {
             egui::CentralPanel::default().show(ui, |ui| self.draw_welcome(ui));
             self.draw_project_switcher(ui.ctx());
@@ -2023,6 +3216,7 @@ impl eframe::App for IdeApp {
             egui::Panel::bottom("ide-build")
                 .resizable(true)
                 .default_size(190.0)
+                .size_range(140.0..=520.0)
                 .show(ui, |ui| self.draw_bottom(ui));
         }
         if self.inspector_open {
@@ -2039,30 +3233,116 @@ impl eframe::App for IdeApp {
             .show(ui, |ui| self.draw_files(ui));
         egui::CentralPanel::default().show(ui, |ui| self.draw_editor(ui));
         self.draw_project_switcher(ui.ctx());
-        if self.new_file_dialog {
-            egui::Window::new("Create a file")
+        self.draw_authoring_dialogs(ui.ctx());
+        if self.edit_preview.is_some() {
+            let mut preview_open = true;
+            let mut apply = false;
+            let mut discard = false;
+            egui::Window::new("Review formatting")
                 .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .resizable(true)
+                .default_size([900.0, 560.0])
+                .open(&mut preview_open)
                 .show(ui.ctx(), |ui| {
-                    ui.label("Create an empty file inside this project.");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.new_file_path)
-                            .hint_text("src/example.rs")
-                            .desired_width(340.0),
-                    );
-                    ui.horizontal(|ui| {
-                        if ui
-                            .add_enabled(self.pending.is_none(), egui::Button::new("Create"))
-                            .clicked()
-                        {
-                            self.create_workspace_file();
-                        }
-                        if ui.button("Cancel").clicked() {
-                            self.new_file_dialog = false;
-                        }
-                    });
+                    if let Some(preview) = self.edit_preview.as_mut() {
+                        ui.label(preview.path.display().to_string());
+                        ui.weak(format!("Document revision {} · no changes are written until you apply and save", preview.document_version));
+                        ui.separator();
+                        ui.columns(2, |columns| {
+                            let left_size = [columns[0].available_width(), columns[0].available_height()];
+                            let right_size = [columns[1].available_width(), columns[1].available_height()];
+                            columns[0].strong("Current");
+                            columns[0].add_sized(
+                                left_size,
+                                egui::TextEdit::multiline(&mut preview.original_contents)
+                                    .code_editor()
+                                    .interactive(false),
+                            );
+                            columns[1].strong("Proposed");
+                            columns[1].add_sized(
+                                right_size,
+                                egui::TextEdit::multiline(&mut preview.proposed_contents)
+                                    .code_editor()
+                                    .interactive(false),
+                            );
+                        });
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            if ui.button("Apply preview").clicked() {
+                                apply = true;
+                            }
+                            if ui.button("Discard").clicked() {
+                                discard = true;
+                            }
+                        });
+                    }
                 });
+            if apply {
+                self.apply_edit_preview();
+            } else if discard || !preview_open {
+                self.edit_preview = None;
+                self.status = "Formatting preview discarded.".to_owned();
+            }
+        }
+        if self.workspace_edit_preview.is_some() {
+            let mut preview_open = true;
+            let mut apply = false;
+            let mut discard = false;
+            egui::Window::new("Review Rust refactor")
+                .collapsible(false)
+                .resizable(true)
+                .default_size([1100.0, 720.0])
+                .open(&mut preview_open)
+                .show(ui.ctx(), |ui| {
+                    if let Some(previews) = self.workspace_edit_preview.as_mut() {
+                        ui.strong(format!("{} open files will change", previews.len()));
+                        ui.weak("Nothing is written until you apply the preview and save the changed files.");
+                        ui.separator();
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            for preview in previews {
+                                egui::CollapsingHeader::new(preview.path.display().to_string())
+                                    .default_open(true)
+                                    .show(ui, |ui| {
+                                        ui.weak(format!("Document revision {}", preview.document_version));
+                                        ui.columns(2, |columns| {
+                                            let left_size = [columns[0].available_width(), 180.0];
+                                            let right_size = [columns[1].available_width(), 180.0];
+                                            columns[0].strong("Current");
+                                            columns[0].add_sized(
+                                                left_size,
+                                                egui::TextEdit::multiline(&mut preview.original_contents)
+                                                    .code_editor()
+                                                    .interactive(false),
+                                            );
+                                            columns[1].strong("Proposed");
+                                            columns[1].add_sized(
+                                                right_size,
+                                                egui::TextEdit::multiline(&mut preview.proposed_contents)
+                                                    .code_editor()
+                                                    .interactive(false),
+                                            );
+                                        });
+                                    });
+                            }
+                        });
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            if ui.button("Apply refactor").clicked() {
+                                apply = true;
+                            }
+                            if ui.button("Discard").clicked() {
+                                discard = true;
+                            }
+                        });
+                    }
+                });
+            if apply {
+                self.apply_workspace_edit_preview();
+                self.rename_target = None;
+            } else if discard || !preview_open {
+                self.workspace_edit_preview = None;
+                self.status = "Rust refactor preview discarded.".to_owned();
+            }
         }
         ui.ctx().request_repaint_after(Duration::from_millis(80));
     }
@@ -2074,6 +3354,7 @@ struct FileTreeView<'a> {
     selected: Option<&'a PathBuf>,
     enabled: bool,
     filter: &'a str,
+    rust_crate_roots: &'a BTreeSet<PathBuf>,
 }
 
 fn draw_file_tree(
@@ -2084,7 +3365,8 @@ fn draw_file_tree(
     view: &FileTreeView<'_>,
     requested: &mut Option<PathBuf>,
 ) {
-    for (name, entry) in tree.entries() {
+    let ordering = workspace_tree_ordering(parent, view.rust_crate_roots);
+    for (name, entry) in tree.ordered_entries(ordering) {
         match entry {
             WorkspaceTreeEntry::Directory(directory) => {
                 if !directory.contains_matching_file(view.filter) {
@@ -2110,7 +3392,7 @@ fn draw_file_tree(
                     view.enabled,
                     egui::Button::selectable(
                         view.selected == Some(path),
-                        format!("{name}{}", if dirty { " *" } else { "" }),
+                        format!("{}{}", file_display_label(path, view.files), if dirty { " *" } else { "" }),
                     ),
                 );
                 if response.clicked() {
@@ -2120,6 +3402,217 @@ fn draw_file_tree(
             }
         }
     }
+}
+
+fn reference_range(
+    index: &SemanticWorkspaceIndex,
+    reference: &SemanticObjectRef,
+) -> Option<SemanticRange> {
+    index.resolve(reference).map(|object| object.selection_range)
+}
+
+fn xml_parse_diagnostic(
+    path: &Path,
+    source: &str,
+    error: &xml_semantics::XmlParseError,
+) -> vapor_gui_core::StructuredDiagnostic {
+    let message = "This XML document could not be parsed. Inspect its syntax near the highlighted file.".to_owned();
+    let mut offset = error.offset.min(source.len());
+    while !source.is_char_boundary(offset) { offset = offset.saturating_sub(1); }
+    let end = source[offset..].chars().next().map_or(offset, |character| offset + character.len_utf8());
+    let range = vapor_gui_core::semantic::semantic_range_from_byte_span(source, offset..end);
+    vapor_gui_core::StructuredDiagnostic {
+        origin: vapor_gui_core::DiagnosticOrigin::Vapor,
+        severity: vapor_gui_core::DiagnosticSeverity::Error,
+        code: Some("vapor.xml.parse".to_owned()),
+        message: message.clone(),
+        rendered: Some(message.clone()),
+        primary: Some(vapor_gui_core::DiagnosticSpan {
+            file: path.to_string_lossy().into_owned(),
+            start_line: range.start.line + 1,
+            start_column: range.start.character + 1,
+            end_line: range.end.line + 1,
+            end_column: range.end.character + 1,
+            primary: true,
+            label: Some("XML syntax error".to_owned()),
+        }),
+        related: Vec::new(),
+        raw_payload: "XML parser reported invalid structure".to_owned(),
+    }
+}
+
+fn toml_parse_diagnostic(
+    path: &Path,
+    source: &str,
+    error: &toml_edit::TomlError,
+) -> vapor_gui_core::StructuredDiagnostic {
+    let primary = error.span().map(|span| {
+        let range = byte_span_to_semantic_range(source, span);
+        vapor_gui_core::DiagnosticSpan {
+            file: path.to_string_lossy().into_owned(),
+            start_line: range.start.line.saturating_add(1),
+            start_column: range.start.character.saturating_add(1),
+            end_line: range.end.line.saturating_add(1),
+            end_column: range.end.character.saturating_add(1),
+            primary: true,
+            label: Some("TOML syntax error".to_owned()),
+        }
+    });
+    let message = truncate_diagnostic_payload(error.message());
+    vapor_gui_core::StructuredDiagnostic {
+        origin: vapor_gui_core::DiagnosticOrigin::Vapor,
+        severity: vapor_gui_core::DiagnosticSeverity::Error,
+        code: Some("vapor.toml.parse".to_owned()),
+        message: message.clone(),
+        rendered: None,
+        primary,
+        related: Vec::new(),
+        // Keep the machine detail but avoid retaining a formatted TOML parser
+        // error, which may quote source text such as credentials or tokens.
+        raw_payload: message,
+    }
+}
+
+fn byte_span_to_semantic_range(
+    source: &str,
+    span: std::ops::Range<usize>,
+) -> SemanticRange {
+    vapor_gui_core::semantic::semantic_range_from_byte_span(source, span)
+}
+
+fn file_display_label(path: &Path, all_files: &[PathBuf]) -> String {
+    if path.extension().is_some_and(|extension| extension == "rs") {
+        shortest_rust_label(path, all_files)
+    } else {
+        path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned())
+    }
+}
+
+fn rust_label_parts(path: &Path) -> Vec<String> {
+    let Some(file_name) = path.file_name().map(|name| name.to_string_lossy().into_owned()) else {
+        return vec![path.display().to_string()];
+    };
+    let mut directories = path.parent().into_iter().flat_map(Path::components).filter_map(|component| match component {
+        std::path::Component::Normal(name) => Some(name.to_string_lossy().into_owned()),
+        _ => None,
+    }).collect::<Vec<_>>();
+    if let Some(src_index) = directories.iter().rposition(|part| part == "src") {
+        directories = directories.split_off(src_index + 1);
+    }
+    if file_name == "mod.rs" {
+        if directories.is_empty() { vec!["crate".to_owned()] } else { directories }
+    } else {
+        let stem = Path::new(&file_name)
+            .file_stem()
+            .map_or_else(|| file_name.clone(), |stem| stem.to_string_lossy().into_owned());
+        directories.push(stem);
+        directories
+    }
+}
+
+fn rust_crate_label(path: &Path) -> Option<String> {
+    let directories = path
+        .parent()?
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(name) => Some(name.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let src_index = directories.iter().rposition(|part| part == "src")?;
+    if src_index >= 2 && directories[src_index - 2] == "crates" {
+        Some(directories[src_index - 1].clone())
+    } else {
+        directories.get(src_index.checked_sub(1)?).cloned()
+    }
+}
+
+fn canonical_rust_item_kind(
+    document: &Path,
+    crate_roots: &BTreeSet<PathBuf>,
+) -> Option<rust_semantics::CanonicalRustItemKind> {
+    let is_cargo_source = crate_roots.iter().any(|root| {
+        document
+            .strip_prefix(root)
+            .ok()
+            .and_then(|relative| relative.components().next())
+            .is_some_and(|component| component.as_os_str() == "src")
+    });
+    is_cargo_source
+        .then(|| rust_semantics::CanonicalRustItemKind::for_document(document))
+        .flatten()
+}
+
+fn rust_crate_roots(files: &[PathBuf]) -> BTreeSet<PathBuf> {
+    let manifests = files
+        .iter()
+        .filter(|path| path.file_name().is_some_and(|name| name == "Cargo.toml"))
+        .filter_map(|path| path.parent().map(Path::to_path_buf))
+        .collect::<BTreeSet<_>>();
+    let mut roots = BTreeSet::new();
+    for source in files
+        .iter()
+        .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
+    {
+        let nearest_manifest = manifests
+            .iter()
+            .filter(|root| source.starts_with(root))
+            .max_by_key(|root| root.components().count());
+        if let Some(root) = nearest_manifest
+            && let Ok(relative) = source.strip_prefix(root)
+        {
+            let first = relative.components().next().and_then(|component| match component {
+                std::path::Component::Normal(name) => name.to_str(),
+                _ => None,
+            });
+            let cargo_source = matches!(first, Some("src" | "tests" | "benches" | "examples"))
+                || relative == Path::new("build.rs");
+            if cargo_source {
+                roots.insert(root.clone());
+            }
+        }
+    }
+    roots
+}
+
+fn workspace_tree_ordering(
+    parent: &Path,
+    rust_crate_roots: &BTreeSet<PathBuf>,
+) -> WorkspaceTreeOrdering {
+    if rust_crate_roots
+        .iter()
+        .any(|root| parent == root || parent.starts_with(root))
+    {
+        WorkspaceTreeOrdering::Alphabetical
+    } else {
+        WorkspaceTreeOrdering::DirectoriesFirst
+    }
+}
+
+fn shortest_rust_label(path: &Path, candidates: &[PathBuf]) -> String {
+    let parts = rust_label_parts(path);
+    for suffix_len in 1..=parts.len() {
+        let suffix = parts[parts.len() - suffix_len..].join("/");
+        let ambiguous = candidates.iter().filter(|other| *other != path).any(|other| {
+            if other.extension().is_none_or(|extension| extension != "rs") { return false; }
+            let other_parts = rust_label_parts(other);
+            other_parts.len() >= suffix_len
+                && other_parts[other_parts.len() - suffix_len..].join("/") == suffix
+        });
+        if !ambiguous { return suffix; }
+    }
+    let mut qualified = rust_crate_label(path).into_iter().collect::<Vec<_>>();
+    qualified.extend(parts);
+    let label = qualified.join("/");
+    let fallback_still_collides = candidates.iter().filter(|other| *other != path).any(|other| {
+        let mut other_qualified = rust_crate_label(other).into_iter().collect::<Vec<_>>();
+        other_qualified.extend(rust_label_parts(other));
+        other_qualified.join("/") == label
+    });
+    if path.file_name().is_some_and(|name| name == "mod.rs") && fallback_still_collides {
+        qualified.push("mod".to_owned());
+    }
+    qualified.join("/")
 }
 
 fn nonempty_path(value: &str) -> Option<PathBuf> {
@@ -2183,55 +3676,70 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
-fn parse_diagnostics(message: &serde_json::Value) -> Option<(PathBuf, Vec<Diagnostic>)> {
-    if message.get("method").and_then(serde_json::Value::as_str)
-        != Some("textDocument/publishDiagnostics")
-    {
-        return None;
-    }
-    let params = message.get("params")?;
-    let path = path_from_file_uri(params.get("uri")?.as_str()?)?;
-    let diagnostics = params
-        .get("diagnostics")?
-        .as_array()?
-        .iter()
-        .filter_map(|diagnostic| {
-            let start = diagnostic.get("range")?.get("start")?;
-            Some(Diagnostic {
-                line: start.get("line")?.as_u64()? as usize + 1,
-                character: start.get("character")?.as_u64()? as usize + 1,
-                severity: diagnostic
-                    .get("severity")
-                    .and_then(serde_json::Value::as_u64),
-                message: diagnostic.get("message")?.as_str()?.to_owned(),
-            })
-        })
-        .collect();
-    Some((path, diagnostics))
+fn rust_analyzer_initialization_options() -> serde_json::Value {
+    serde_json::json!({
+        // Opening source remains analysis-only. Builds are explicit Vapor
+        // operations so the user can see and control their work and output.
+        "checkOnSave": false,
+        "cargo": {"buildScripts": {"enable": false}},
+        "procMacro": {"enable": false}
+    })
 }
 
-fn reference_locations(result: &serde_json::Value, root: &Path) -> Vec<ReferenceLocation> {
+fn relative_workspace_path(root: &Path, path: &Path) -> Option<PathBuf> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    let absolute = absolute.canonicalize().unwrap_or(absolute);
+    absolute.strip_prefix(root).ok().map(Path::to_path_buf)
+}
+
+fn truncate_diagnostic_payload(payload: &str) -> String {
+    const MAX_BYTES: usize = 64 * 1024;
+    if payload.len() <= MAX_BYTES { return payload.to_owned(); }
+    let mut end = MAX_BYTES;
+    while !payload.is_char_boundary(end) { end -= 1; }
+    format!("{}…", &payload[..end])
+}
+
+fn reference_locations(result: &serde_json::Value, root: &Path) -> (Vec<ReferenceLocation>, usize) {
     let Some(locations) = result.as_array() else {
-        return Vec::new();
+        return (Vec::new(), 0);
     };
     let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    locations
-        .iter()
-        .filter_map(|location| {
-            let absolute_path = path_from_file_uri(location.get("uri")?.as_str()?)?;
-            let canonical_path = absolute_path.canonicalize().unwrap_or(absolute_path);
-            let path = canonical_path
-                .strip_prefix(&canonical_root)
-                .ok()?
-                .to_path_buf();
-            let start = location.get("range")?.get("start")?;
-            Some(ReferenceLocation {
-                path,
-                line: start.get("line")?.as_u64()? as usize + 1,
-                character: start.get("character")?.as_u64()? as usize + 1,
-            })
-        })
-        .collect()
+    let mut references = Vec::with_capacity(locations.len().min(MAX_REFERENCE_LOCATIONS));
+    let mut omitted = 0usize;
+    for location in locations {
+        let Some(absolute_path) = location.get("uri").and_then(serde_json::Value::as_str).and_then(path_from_file_uri) else {
+            continue;
+        };
+        let canonical_path = absolute_path.canonicalize().unwrap_or(absolute_path);
+        let Ok(path) = canonical_path.strip_prefix(&canonical_root) else {
+            continue;
+        };
+        let Some(start) = location.get("range").and_then(|range| range.get("start")) else {
+            continue;
+        };
+        let (Some(line), Some(character)) = (
+            start.get("line").and_then(serde_json::Value::as_u64).and_then(|value| usize::try_from(value).ok()),
+            start.get("character").and_then(serde_json::Value::as_u64).and_then(|value| usize::try_from(value).ok()),
+        ) else {
+            continue;
+        };
+        if references.len() == MAX_REFERENCE_LOCATIONS {
+            omitted = omitted.saturating_add(1);
+        } else {
+            references.push(ReferenceLocation {
+                path: path.to_path_buf(),
+                line,
+                character,
+            });
+        }
+    }
+    (references, omitted)
 }
 
 fn lsp_position(source: &str, character_offset: usize) -> serde_json::Value {
@@ -2248,27 +3756,45 @@ fn lsp_position(source: &str, character_offset: usize) -> serde_json::Value {
     serde_json::json!({"line": line, "character": character})
 }
 
-fn position_to_byte_offset(source: &str, line: usize, character: usize) -> usize {
-    let mut byte_offset = 0;
-    for (line_index, line_text) in source.split_inclusive('\n').enumerate() {
+fn position_to_byte_offset(source: &str, line: usize, character: usize) -> Option<usize> {
+    let mut line_start = 0;
+    for (line_index, line_text) in source.split('\n').enumerate() {
         if line_index == line {
-            let line_text = line_text.strip_suffix('\n').unwrap_or(line_text);
             let line_text = line_text.strip_suffix('\r').unwrap_or(line_text);
             let mut utf16_offset = 0;
             for (offset, scalar) in line_text.char_indices() {
-                if utf16_offset >= character {
-                    return byte_offset + offset;
+                if utf16_offset == character {
+                    return Some(line_start + offset);
                 }
                 utf16_offset += scalar.len_utf16();
                 if utf16_offset > character {
-                    return byte_offset + offset;
+                    return None;
                 }
             }
-            return byte_offset + line_text.len();
+            return (utf16_offset == character).then_some(line_start + line_text.len());
         }
-        byte_offset += line_text.len();
+        line_start += line_text.len() + 1;
     }
-    source.len()
+    None
+}
+
+fn semantic_object_byte_range(
+    index: &SemanticWorkspaceIndex,
+    reference: &SemanticObjectRef,
+    source: &str,
+) -> Option<Range<usize>> {
+    let object = index.resolve(reference)?;
+    let start = position_to_byte_offset(
+        source,
+        object.range.start.line as usize,
+        object.range.start.character as usize,
+    )?;
+    let end = position_to_byte_offset(
+        source,
+        object.range.end.line as usize,
+        object.range.end.character as usize,
+    )?;
+    (start <= end).then_some(start..end)
 }
 
 fn apply_text_edits(source: &str, edits: &[serde_json::Value]) -> Result<String, &'static str> {
@@ -2288,7 +3814,8 @@ fn apply_text_edits(source: &str, edits: &[serde_json::Value]) -> Result<String,
                     .get("character")
                     .and_then(serde_json::Value::as_u64)
                     .ok_or("an edit start has no character")? as usize,
-            );
+            )
+            .ok_or("an edit start is outside the document or splits a Unicode character")?;
             let end = position_to_byte_offset(
                 source,
                 end.get("line")
@@ -2297,7 +3824,8 @@ fn apply_text_edits(source: &str, edits: &[serde_json::Value]) -> Result<String,
                 end.get("character")
                     .and_then(serde_json::Value::as_u64)
                     .ok_or("an edit end has no character")? as usize,
-            );
+            )
+            .ok_or("an edit end is outside the document or splits a Unicode character")?;
             let replacement = edit
                 .get("newText")
                 .and_then(serde_json::Value::as_str)
@@ -2431,6 +3959,9 @@ fn cursor_position(source: &str, character_index: usize) -> (usize, usize) {
 }
 
 fn document_tab_label(path: &Path, open_documents: &BTreeMap<PathBuf, Document>) -> String {
+    if path.extension().is_some_and(|extension| extension == "rs") {
+        return shortest_rust_label(path, &open_documents.keys().cloned().collect::<Vec<_>>());
+    }
     let parts = path
         .components()
         .filter_map(|component| match component {
@@ -2479,16 +4010,380 @@ fn connect_service(workspace: Option<PathBuf>) -> Result<Client, vapor_client::C
     )
 }
 
+fn workspace_diagnostic_path(
+    workspace: &Path,
+    diagnostic_file: &str,
+    known_files: &[PathBuf],
+) -> Option<PathBuf> {
+    let workspace = workspace.canonicalize().unwrap_or_else(|_| workspace.to_path_buf());
+    let path = Path::new(diagnostic_file);
+    if diagnostic_file.trim().is_empty() || diagnostic_file.starts_with("file:") {
+        return None;
+    }
+    if path.is_absolute() {
+        let canonical = path.canonicalize().ok()?;
+        return canonical.strip_prefix(&workspace).ok().map(Path::to_path_buf);
+    }
+
+    // Cargo may report a package-relative path when the package is nested in
+    // the workspace. Resolve only a unique suffix match from the IDE's file
+    // snapshot; guessing between duplicate module names would misnavigate.
+    let matches = known_files
+        .iter()
+        .filter(|candidate| candidate.ends_with(path))
+        .take(2)
+        .collect::<Vec<_>>();
+    if matches.len() == 1 {
+        return Some(matches[0].to_path_buf());
+    }
+    if matches.len() > 1 {
+        return None;
+    }
+
+    let canonical = workspace.join(path).canonicalize().ok()?;
+    canonical.strip_prefix(workspace).ok().map(Path::to_path_buf)
+}
+
+fn reference_request_matches_selection(
+    request_path: &Path,
+    semantic_target: Option<&SemanticObjectRef>,
+    requested_cursor_offset: Option<usize>,
+    current_cursor_offset: usize,
+    selected_file: Option<&PathBuf>,
+    selected_semantic: Option<&SemanticObjectRef>,
+) -> bool {
+    semantic_target.map_or_else(
+        || {
+            selected_file.is_some_and(|selected| selected == request_path)
+                && requested_cursor_offset.is_none_or(|offset| offset == current_cursor_offset)
+        },
+        |target| selected_semantic == Some(target),
+    )
+}
+
+fn operation_produces_build_diagnostics(action: &str) -> bool {
+    matches!(
+        action.rsplit('.').next(),
+        Some("build" | "check" | "test" | "validate")
+    )
+}
+
+fn diagnostic_origin_label(origin: vapor_gui_core::DiagnosticOrigin) -> &'static str {
+    match origin {
+        vapor_gui_core::DiagnosticOrigin::RustAnalyzer => "Rust Analyzer",
+        vapor_gui_core::DiagnosticOrigin::Cargo => "Cargo",
+        vapor_gui_core::DiagnosticOrigin::Rustc => "rustc",
+        vapor_gui_core::DiagnosticOrigin::Rustdoc => "rustdoc",
+        vapor_gui_core::DiagnosticOrigin::Vapor => "Vapor",
+    }
+}
+
+fn semantic_source_limit_diagnostic() -> vapor_gui_core::StructuredDiagnostic {
+    let message = "Local semantic indexing is paused for files larger than 2 MiB; source editing remains available.";
+    vapor_gui_core::StructuredDiagnostic {
+        origin: vapor_gui_core::DiagnosticOrigin::Vapor,
+        severity: vapor_gui_core::DiagnosticSeverity::Information,
+        code: Some("vapor.semantic.source-limit".to_owned()),
+        message: message.to_owned(),
+        rendered: None,
+        primary: None,
+        related: Vec::new(),
+        raw_payload: message.to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        Diagnostic, Document, ReferenceLocation, apply_text_edits, completion_items,
-        cursor_position, document_tab_label, file_uri, find_matches, hover_text,
-        identifier_byte_range, lsp_position, nonempty_path, parse_diagnostics, path_from_file_uri,
-        position_to_byte_offset, reference_locations,
+        Document, EditPreviewApplyError, ProblemRow, ProblemStore, ReferenceLocation, VersionedEditPreview,
+        apply_text_edits, apply_versioned_edit, completion_items,
+        operation_produces_build_diagnostics, reference_request_matches_selection,
+        pending_lsp_requests_for_cancellation,
+        workspace_versions_match,
+        semantic_source_limit_diagnostic,
+        workspace_diagnostic_path,
+        canonical_rust_item_kind,
+        cursor_position, document_tab_label, file_display_label, file_uri, find_matches, hover_text,
+        identifier_byte_range, lsp_position, nonempty_path,
+        path_from_file_uri, position_to_byte_offset, reference_locations,
+        relative_workspace_path, rust_analyzer_initialization_options, rust_label_parts,
+        rust_crate_roots,
+        shortest_rust_label, toml_parse_diagnostic, workspace_tree_ordering,
+        semantic_object_byte_range,
     };
-    use std::collections::BTreeMap;
-    use std::path::Path;
+    use super::rust_semantics::{
+        CanonicalRustItemKind, parse_semantic_symbols, render_canonical_rust_item,
+        rust_lsp_symbol_kind,
+    };
+    use vapor_gui_core::semantic::SemanticObjectKind;
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn cargo_diagnostics_map_to_workspace_files_and_problem_rows_keep_provenance() {
+        let root = std::env::temp_dir().join(format!("vapor-cargo-problems-{}", std::process::id()));
+        let source = root.join("src/main.rs");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(&source, "fn main() {}\n").unwrap();
+
+        assert_eq!(
+            workspace_diagnostic_path(&root, "src/main.rs", &[PathBuf::from("src/main.rs")]),
+            Some(PathBuf::from("src/main.rs"))
+        );
+        assert_eq!(
+            workspace_diagnostic_path(&root, "src/main.rs", &[PathBuf::from("crates/game/src/main.rs")]),
+            Some(PathBuf::from("crates/game/src/main.rs")),
+            "nested package-relative diagnostic paths resolve through the known file list"
+        );
+        assert_eq!(
+            workspace_diagnostic_path(
+                &root,
+                "src/main.rs",
+                &[PathBuf::from("crates/a/src/main.rs"), PathBuf::from("crates/b/src/main.rs")],
+            ),
+            None,
+            "ambiguous suffix matches must not navigate to an arbitrary file"
+        );
+        let outside = root.with_extension("outside.rs");
+        std::fs::write(&outside, "fn outside() {}\n").unwrap();
+        assert_eq!(workspace_diagnostic_path(&root, outside.to_str().unwrap(), &[]), None);
+
+        let mut store = ProblemStore::default();
+        let language_diagnostic = vapor_gui_core::StructuredDiagnostic {
+            origin: vapor_gui_core::DiagnosticOrigin::RustAnalyzer,
+            severity: vapor_gui_core::DiagnosticSeverity::Warning,
+            code: None,
+            message: "language warning".to_owned(),
+            rendered: None,
+            primary: None,
+            related: Vec::new(),
+            raw_payload: "{}".to_owned(),
+        };
+        store.replace_source_diagnostics(
+            PathBuf::from("src/main.rs"),
+            vapor_gui_core::DiagnosticOrigin::RustAnalyzer,
+            vec![language_diagnostic],
+        );
+        let build_diagnostic = vapor_gui_core::StructuredDiagnostic {
+            origin: vapor_gui_core::DiagnosticOrigin::Cargo,
+            severity: vapor_gui_core::DiagnosticSeverity::Error,
+            code: Some("E0425".to_owned()),
+            message: "cannot find value".to_owned(),
+            rendered: None,
+            primary: None,
+            related: Vec::new(),
+            raw_payload: "{\"reason\":\"compiler-message\"}".to_owned(),
+        };
+        store.begin_build("build-1");
+        store.push_build("build-1", ProblemRow {
+            path: workspace_diagnostic_path(&root, "src/main.rs", &[PathBuf::from("src/main.rs")]),
+            operation: Some("workspace.test".to_owned()),
+            diagnostic: build_diagnostic.clone(),
+        });
+        store.push_build("build-1", ProblemRow {
+            path: workspace_diagnostic_path(&root, "src/main.rs", &[PathBuf::from("src/main.rs")]),
+            operation: Some("workspace.test".to_owned()),
+            diagnostic: build_diagnostic,
+        });
+        assert_eq!(store.count(), 2, "repeated output should not duplicate a build problem");
+        let rows = store.rows();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].diagnostic.origin, vapor_gui_core::DiagnosticOrigin::RustAnalyzer);
+        assert_eq!(rows[1].diagnostic.origin, vapor_gui_core::DiagnosticOrigin::Cargo);
+        assert_eq!(rows[1].operation, Some("workspace.test"));
+
+        store.begin_build("build-2");
+        store.push_build("build-1", ProblemRow {
+            path: Some(PathBuf::from("src/main.rs")),
+            operation: Some("workspace.test".to_owned()),
+            diagnostic: vapor_gui_core::StructuredDiagnostic {
+                origin: vapor_gui_core::DiagnosticOrigin::Cargo,
+                severity: vapor_gui_core::DiagnosticSeverity::Error,
+                code: Some("E0425".to_owned()),
+                message: "cannot find value".to_owned(),
+                rendered: None,
+                primary: None,
+                related: Vec::new(),
+                raw_payload: "{\"reason\":\"compiler-message\"}".to_owned(),
+            },
+        });
+        let rows = store.rows();
+        assert_eq!(rows.len(), 1, "late output from a prior build is ignored");
+        assert_eq!(rows[0].diagnostic.origin, vapor_gui_core::DiagnosticOrigin::RustAnalyzer);
+
+        std::fs::remove_dir_all(&root).unwrap();
+        let _ = std::fs::remove_file(outside);
+    }
+
+    #[test]
+    fn source_producers_keep_independent_diagnostics_for_one_document() {
+        let mut store = ProblemStore::default();
+        let path = PathBuf::from("src/components.rs");
+        let rust_analyzer = vapor_gui_core::StructuredDiagnostic {
+            origin: vapor_gui_core::DiagnosticOrigin::RustAnalyzer,
+            severity: vapor_gui_core::DiagnosticSeverity::Warning,
+            code: Some("ra.unused".to_owned()),
+            message: "unused field".to_owned(),
+            rendered: None,
+            primary: None,
+            related: Vec::new(),
+            raw_payload: String::new(),
+        };
+        let vapor = vapor_gui_core::StructuredDiagnostic {
+            origin: vapor_gui_core::DiagnosticOrigin::Vapor,
+            severity: vapor_gui_core::DiagnosticSeverity::Warning,
+            code: Some("vapor.rust.layout".to_owned()),
+            message: "move this component into components.rs".to_owned(),
+            rendered: None,
+            primary: None,
+            related: Vec::new(),
+            raw_payload: String::new(),
+        };
+
+        store.replace_source_diagnostics(
+            path.clone(),
+            vapor_gui_core::DiagnosticOrigin::RustAnalyzer,
+            vec![rust_analyzer],
+        );
+        store.replace_source_diagnostics(
+            path.clone(),
+            vapor_gui_core::DiagnosticOrigin::Vapor,
+            vec![vapor],
+        );
+        assert_eq!(store.count(), 2);
+
+        store.replace_source_diagnostics(
+            path,
+            vapor_gui_core::DiagnosticOrigin::RustAnalyzer,
+            Vec::new(),
+        );
+        let rows = store.rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].diagnostic.origin, vapor_gui_core::DiagnosticOrigin::Vapor);
+    }
+
+    #[test]
+    fn problem_rows_materialize_only_the_visible_virtualized_range() {
+        let mut store = ProblemStore::default();
+        let diagnostics = (0..10_000)
+            .map(|index| vapor_gui_core::StructuredDiagnostic {
+                origin: vapor_gui_core::DiagnosticOrigin::Vapor,
+                severity: vapor_gui_core::DiagnosticSeverity::Information,
+                code: None,
+                message: index.to_string(),
+                rendered: None,
+                primary: None,
+                related: Vec::new(),
+                raw_payload: String::new(),
+            })
+            .collect();
+        store.replace_source_diagnostics(
+            PathBuf::from("src/large.rs"),
+            vapor_gui_core::DiagnosticOrigin::Vapor,
+            diagnostics,
+        );
+        store.begin_build("build-1");
+        store.push_build(
+            "build-1",
+            ProblemRow {
+                path: None,
+                operation: Some("workspace.test".to_owned()),
+                diagnostic: vapor_gui_core::StructuredDiagnostic {
+                    origin: vapor_gui_core::DiagnosticOrigin::Cargo,
+                    severity: vapor_gui_core::DiagnosticSeverity::Error,
+                    code: None,
+                    message: "build row".to_owned(),
+                    rendered: None,
+                    primary: None,
+                    related: Vec::new(),
+                    raw_payload: String::new(),
+                },
+            },
+        );
+
+        assert_eq!(store.count(), 10_001);
+        let visible = store.rows_in_range(9_998..10_001);
+        assert_eq!(visible.len(), 3);
+        assert_eq!(visible[0].diagnostic.message, "9998");
+        assert_eq!(visible[1].diagnostic.message, "9999");
+        assert_eq!(visible[2].diagnostic.message, "build row");
+    }
+
+    #[test]
+    fn semantic_reference_results_are_discarded_after_selection_changes() {
+        let selected = vapor_gui_core::semantic::SemanticObjectRef {
+            id: vapor_gui_core::semantic::SemanticObjectId::new(
+                "rust",
+                "src/components.rs",
+                vec!["Ship".to_owned()],
+            ),
+            document_version: 4,
+        };
+        let other = vapor_gui_core::semantic::SemanticObjectRef {
+            id: vapor_gui_core::semantic::SemanticObjectId::new(
+                "rust",
+                "src/components.rs",
+                vec!["Pilot".to_owned()],
+            ),
+            document_version: 4,
+        };
+        let path = Path::new("src/components.rs");
+        assert!(reference_request_matches_selection(
+            path, Some(&selected), None, 0, None, Some(&selected)
+        ));
+        assert!(!reference_request_matches_selection(
+            path, Some(&selected), None, 0, None, Some(&other)
+        ));
+        assert!(reference_request_matches_selection(
+            path, None, Some(4), 4, Some(&path.to_path_buf()), None
+        ));
+        assert!(!reference_request_matches_selection(
+            path, None, Some(4), 5, Some(&path.to_path_buf()), None
+        ));
+        assert!(!reference_request_matches_selection(
+            path, None, None, 0, Some(&PathBuf::from("src/lib.rs")), None
+        ));
+    }
+
+    #[test]
+    fn semantic_inspector_reports_the_rust_marker_that_classified_a_type() {
+        let component = vapor_gui_core::semantic::SemanticObject {
+            id: vapor_gui_core::semantic::SemanticObjectId::new(
+                "rust",
+                "src/components.rs",
+                vec!["Ship".to_owned()],
+            ),
+            kind: SemanticObjectKind::Component,
+            name: "Ship".to_owned(),
+            detail: Some("pub struct Ship".to_owned()),
+            range: vapor_gui_core::semantic::SemanticRange::default(),
+            selection_range: vapor_gui_core::semantic::SemanticRange::default(),
+            attributes: vec!["#[derive(bevy::Component, Debug)]".to_owned()],
+            children: Vec::new(),
+        };
+        assert_eq!(
+            super::semantic_view::semantic_convention_status(&component).as_deref(),
+            Some("Detected from #[derive(bevy::Component, Debug)]")
+        );
+
+        let mut resource = component.clone();
+        resource.kind = SemanticObjectKind::Resource;
+        resource.attributes = vec!["#[derive(Resource)]".to_owned()];
+        assert_eq!(
+            super::semantic_view::semantic_convention_status(&resource).as_deref(),
+            Some("Detected from #[derive(Resource)]")
+        );
+    }
+
+    #[test]
+    fn only_compiler_workflows_replace_build_problems() {
+        for action in ["workspace.build", "workspace.check", "workspace.test", "workspace.validate"] {
+            assert!(operation_produces_build_diagnostics(action), "{action}");
+        }
+        for action in ["workspace.fmt", "workspace.publish", "composition.launch"] {
+            assert!(!operation_produces_build_diagnostics(action), "{action}");
+        }
+    }
 
     #[test]
     fn document_dirty_state_tracks_edits_and_save_baseline() {
@@ -2503,6 +4398,31 @@ mod tests {
         assert!(document.is_dirty());
         document.saved_contents.clone_from(&document.contents);
         assert!(!document.is_dirty());
+    }
+
+    #[test]
+    fn edit_preview_requires_the_exact_document_revision_and_original_text() {
+        let preview = VersionedEditPreview {
+            path: PathBuf::from("src/lib.rs"),
+            document_version: 4,
+            original_contents: "fn main(){ }".to_owned(),
+            proposed_contents: "fn main() { }".to_owned(),
+        };
+        let mut current = Document {
+            contents: preview.original_contents.clone(),
+            saved_contents: preview.original_contents.clone(),
+            fingerprint: "unchanged-on-disk".to_owned(),
+            version: 4,
+        };
+        assert_eq!(apply_versioned_edit(&mut current, &preview), Ok(5));
+        assert_eq!(current.contents, preview.proposed_contents);
+        assert!(current.is_dirty());
+
+        let mut stale = Document { version: 5, ..current.clone() };
+        assert_eq!(apply_versioned_edit(&mut stale, &preview), Err(EditPreviewApplyError::Stale));
+
+        let mut changed = Document { contents: "concurrent edit".to_owned(), ..current };
+        assert_eq!(apply_versioned_edit(&mut changed, &preview), Err(EditPreviewApplyError::Stale));
     }
 
     #[test]
@@ -2555,55 +4475,448 @@ mod tests {
     }
 
     #[test]
-    fn rust_analyzer_diagnostics_use_one_based_editor_locations() {
-        let message = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/publishDiagnostics",
-            "params": {
-                "uri": "file:///tmp/src/main.rs",
-                "diagnostics": [{
-                    "range": {"start": {"line": 3, "character": 8}},
-                    "severity": 1,
-                    "message": "expected expression"
-                }]
+    fn rust_analyzer_initialization_disables_implicit_cargo_build_work() {
+        let options = rust_analyzer_initialization_options();
+        assert_eq!(options["checkOnSave"], false);
+        assert_eq!(options["cargo"]["buildScripts"]["enable"], false);
+        assert_eq!(options["procMacro"]["enable"], false);
+    }
+
+    #[test]
+    fn workspace_diagnostic_paths_normalize_absolute_and_relative_files() {
+        let root = std::env::temp_dir().join("vapor-ide-workspace-path-test");
+        let file = root.join("src/main.rs");
+        assert_eq!(relative_workspace_path(&root, &file), Some(PathBuf::from("src/main.rs")));
+        assert_eq!(relative_workspace_path(&root, Path::new("src/main.rs")), Some(PathBuf::from("src/main.rs")));
+    }
+
+    #[test]
+    fn rust_analyzer_symbol_kinds_follow_lsp_symbol_kind_numbers() {
+        assert_eq!(rust_lsp_symbol_kind(23), SemanticObjectKind::Struct);
+        assert_eq!(rust_lsp_symbol_kind(24), SemanticObjectKind::Other);
+        assert_eq!(rust_lsp_symbol_kind(25), SemanticObjectKind::Other);
+        assert_eq!(rust_lsp_symbol_kind(26), SemanticObjectKind::Other);
+    }
+
+    #[test]
+    fn semantic_search_finds_component_metadata_and_member_types() {
+        let component = vapor_gui_core::semantic::SemanticObject {
+            id: vapor_gui_core::semantic::SemanticObjectId::new(
+                "rust",
+                "src/components.rs",
+                vec!["Ship".to_owned()],
+            ),
+            kind: SemanticObjectKind::Component,
+            name: "Ship".to_owned(),
+            detail: Some("pub struct Ship".to_owned()),
+            range: vapor_gui_core::semantic::SemanticRange::default(),
+            selection_range: vapor_gui_core::semantic::SemanticRange::default(),
+            attributes: vec!["#[derive(Component)]".to_owned()],
+            children: vec![vapor_gui_core::semantic::SemanticObject {
+                id: vapor_gui_core::semantic::SemanticObjectId::new(
+                    "rust",
+                    "src/components.rs",
+                    vec!["Ship".to_owned(), "velocity".to_owned()],
+                ),
+                kind: SemanticObjectKind::Field,
+                name: "velocity".to_owned(),
+                detail: Some("Vec3".to_owned()),
+                range: vapor_gui_core::semantic::SemanticRange::default(),
+                selection_range: vapor_gui_core::semantic::SemanticRange::default(),
+                attributes: vec!["#[serde(default)]".to_owned()],
+                children: Vec::new(),
+            }],
+        };
+
+        assert!(super::semantic_view::semantic_tree_matches(&component, "vec3"));
+        assert!(super::semantic_view::semantic_tree_matches(&component, "derive(component)"));
+        assert!(super::semantic_view::semantic_tree_matches(&component, "component"));
+        assert!(super::semantic_view::semantic_tree_matches(&component, "serde(default)"));
+    }
+
+    #[test]
+    fn rust_analyzer_symbols_become_component_objects_with_typed_fields() {
+        let source = "#[derive(bevy::ecs::component::Component, Debug)]\npub struct Ship {\n    #[serde(default)]\n    pub velocity: Vec3,\n}\n";
+        let response = serde_json::json!([{
+            "name": "Ship",
+            "kind": 23,
+            "detail": "pub struct Ship",
+            "range": {"start": {"line": 0, "character": 0}, "end": {"line": 4, "character": 1}},
+            "selectionRange": {"start": {"line": 1, "character": 11}, "end": {"line": 1, "character": 15}},
+            "children": [{
+                "name": "velocity",
+                "kind": 8,
+                "range": {"start": {"line": 3, "character": 4}, "end": {"line": 3, "character": 23}},
+                "selectionRange": {"start": {"line": 3, "character": 8}, "end": {"line": 3, "character": 16}}
+            }]
+        }]);
+        let symbols = parse_semantic_symbols(&response, Path::new("src/components.rs"), 7, source);
+        assert_eq!(symbols.len(), 1);
+        assert_eq!(symbols[0].kind, SemanticObjectKind::Component);
+        assert!(symbols[0].attributes.iter().any(|attribute| attribute.contains("derive")));
+        assert_eq!(symbols[0].children[0].detail.as_deref(), Some("Vec3"));
+        assert_eq!(symbols[0].children[0].attributes, ["#[serde(default)]"]);
+    }
+
+    #[test]
+    fn rust_syntax_adapter_classifies_resources_and_system_files_without_building() {
+        let source = "#[derive(Resource)]\npub struct StarMap;\npub fn update_stars() {}\n";
+        let symbols = serde_json::json!([
+            {"name":"StarMap","kind":23,"detail":"pub struct StarMap","range":{"start":{"line":0,"character":0},"end":{"line":1,"character":16}},"selectionRange":{"start":{"line":1,"character":11},"end":{"line":1,"character":18}}},
+            {"name":"update_stars","kind":12,"detail":"pub fn update_stars()","range":{"start":{"line":2,"character":0},"end":{"line":2,"character":24}},"selectionRange":{"start":{"line":2,"character":7},"end":{"line":2,"character":19}}}
+        ]);
+        let indexed = parse_semantic_symbols(&symbols, Path::new("src/systems.rs"), 1, source);
+        assert_eq!(indexed[0].kind, SemanticObjectKind::Resource);
+        assert_eq!(indexed[1].kind, SemanticObjectKind::System);
+    }
+
+    #[test]
+    fn rust_document_symbol_index_has_a_visible_bound_for_large_responses() {
+        let symbols = (0..5_000)
+            .map(|index| serde_json::json!({
+                "name": format!("Generated{index}"),
+                "kind": 5,
+                "range": {"start":{"line":index,"character":0},"end":{"line":index,"character":8}},
+                "selectionRange": {"start":{"line":index,"character":6},"end":{"line":index,"character":8}}
+            }))
+            .collect::<Vec<_>>();
+        let response = serde_json::Value::Array(symbols);
+
+        let parsed = super::rust_semantics::parse_semantic_document_symbols(
+            &response,
+            Path::new("src/generated.rs"),
+            1,
+            "",
+        );
+
+        assert_eq!(parsed.objects.len(), 4_096);
+        assert!(parsed.truncated);
+    }
+
+    #[test]
+    fn rust_document_symbol_index_stops_pathological_nesting() {
+        let mut nested = serde_json::json!({"name":"Leaf","kind":5});
+        for index in (0..80).rev() {
+            nested = serde_json::json!({
+                "name": format!("Module{index}"),
+                "kind": 2,
+                "children": [nested]
+            });
+        }
+        let parsed = super::rust_semantics::parse_semantic_document_symbols(
+            &serde_json::Value::Array(vec![nested]),
+            Path::new("src/generated.rs"),
+            1,
+            "",
+        );
+
+        assert!(parsed.truncated);
+        assert_eq!(parsed.objects.len(), 1);
+        let mut depth = 0;
+        let mut current = &parsed.objects[0];
+        while let Some(child) = current.children.first() {
+            current = child;
+            depth += 1;
+        }
+        assert_eq!(depth, 64);
+    }
+
+    #[test]
+    fn rust_layout_rules_report_specialized_types_outside_their_canonical_modules() {
+        let source = "#[derive(Component)]\npub struct Ship;\n";
+        let response = serde_json::json!([{
+            "name": "Ship",
+            "kind": 23,
+            "range": {"start": {"line": 0, "character": 0}, "end": {"line": 1, "character": 15}},
+            "selectionRange": {"start": {"line": 1, "character": 11}, "end": {"line": 1, "character": 15}}
+        }]);
+        let misplaced = parse_semantic_symbols(&response, Path::new("src/engine.rs"), 1, source);
+        let diagnostics = super::rust_semantics::convention_diagnostics(
+            Path::new("src/engine.rs"),
+            &misplaced,
+        );
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code.as_deref(), Some("vapor.rust.layout.component"));
+        assert_eq!(diagnostics[0].primary.as_ref().unwrap().start_line, 2);
+
+        let canonical = parse_semantic_symbols(&response, Path::new("src/components.rs"), 1, source);
+        assert!(super::rust_semantics::convention_diagnostics(
+            Path::new("src/components.rs"),
+            &canonical,
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn rust_mod_labels_disambiguate_same_named_file_and_module() {
+        let paths = [PathBuf::from("crates/flight/src/game.rs"), PathBuf::from("crates/flight/src/game/mod.rs")];
+        let file_label = file_display_label(&paths[0], &paths);
+        let module_label = file_display_label(&paths[1], &paths);
+
+        assert_ne!(file_label, module_label);
+        assert_eq!(file_label, "flight/game");
+        assert_eq!(module_label, "flight/game/mod");
+        assert!(!module_label.ends_with(".rs"));
+    }
+
+    #[test]
+    fn rust_layout_rules_cover_generic_types_functions_constants_and_statics() {
+        let source = "pub struct FlightModel;\npub fn update_flight() {}\npub const MAX_THRUST: f32 = 1.0;\npub static VERSION: &str = \"0.1\";\n";
+        let response = serde_json::json!([
+            {"name":"FlightModel","kind":23,"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":22}},"selectionRange":{"start":{"line":0,"character":11},"end":{"line":0,"character":22}}},
+            {"name":"update_flight","kind":12,"range":{"start":{"line":1,"character":0},"end":{"line":1,"character":23}},"selectionRange":{"start":{"line":1,"character":7},"end":{"line":1,"character":20}}},
+            {"name":"MAX_THRUST","kind":14,"range":{"start":{"line":2,"character":0},"end":{"line":2,"character":32}},"selectionRange":{"start":{"line":2,"character":10},"end":{"line":2,"character":20}}},
+            {"name":"VERSION","kind":13,"range":{"start":{"line":3,"character":0},"end":{"line":3,"character":36}},"selectionRange":{"start":{"line":3,"character":11},"end":{"line":3,"character":18}}}
+        ]);
+        let objects = parse_semantic_symbols(&response, Path::new("src/engine.rs"), 1, source);
+        let diagnostics = super::rust_semantics::convention_diagnostics(
+            Path::new("src/engine.rs"),
+            &objects,
+        );
+        let codes = diagnostics.iter().filter_map(|diagnostic| diagnostic.code.as_deref()).collect::<Vec<_>>();
+        assert_eq!(codes, [
+            "vapor.rust.layout.type",
+            "vapor.rust.layout.function",
+            "vapor.rust.layout.constant",
+            "vapor.rust.layout.static",
+        ]);
+        assert!(diagnostics.iter().all(|diagnostic| diagnostic.message.contains("belongs in")));
+    }
+
+    #[test]
+    fn rust_workspace_symbols_are_project_scoped_and_keep_source_ranges() {
+        let response = serde_json::json!([
+            {
+                "name": "Ship",
+                "kind": 23,
+                "containerName": "game::components",
+                "location": {
+                    "uri": "file:///fixture/workspace/src/components.rs",
+                    "range": {
+                        "start": {"line": 8, "character": 10},
+                        "end": {"line": 8, "character": 14}
+                    }
+                }
+            },
+            {
+                "name": "External",
+                "kind": 23,
+                "location": {
+                    "uri": "file:///fixture/outside.rs",
+                    "range": {
+                        "start": {"line": 0, "character": 0},
+                        "end": {"line": 0, "character": 8}
+                    }
+                }
             }
-        });
+        ]);
+        let symbols = super::rust_semantics::parse_workspace_symbols(
+            &response,
+            Path::new("/fixture/workspace"),
+        );
+
+        assert_eq!(symbols.len(), 1);
+        assert_eq!(symbols[0].name, "Ship");
+        assert_eq!(symbols[0].id.document, Path::new("src/components.rs"));
+        assert_eq!(symbols[0].id.qualified_name(), "game::components::Ship");
+        assert_eq!(symbols[0].range.start.line, 8);
+        assert_eq!(symbols[0].detail.as_deref(), Some("game::components"));
+    }
+
+    #[test]
+    fn superseded_document_symbol_requests_are_scoped_to_the_same_file() {
+        let pending = |request, path: &str| super::PendingLspRequest {
+            request,
+            path: PathBuf::from(path),
+            document_version: 1,
+            semantic_target: None,
+            cursor_offset: None,
+            workspace_versions: None,
+            query: None,
+        };
+        let requests = BTreeMap::from([
+            (3, pending(super::LspRequest::DocumentSymbols, "src/a.rs")),
+            (4, pending(super::LspRequest::DocumentSymbols, "src/b.rs")),
+            (5, pending(super::LspRequest::Hover, "src/a.rs")),
+            (6, pending(super::LspRequest::WorkspaceSymbols, "src/a.rs")),
+        ]);
+
         assert_eq!(
-            parse_diagnostics(&message),
-            Some((
-                Path::new("/tmp/src/main.rs").to_path_buf(),
-                vec![Diagnostic {
-                    line: 4,
-                    character: 9,
-                    severity: Some(1),
-                    message: "expected expression".to_owned(),
-                }]
-            ))
+            pending_lsp_requests_for_cancellation(
+                &requests,
+                super::LspRequest::DocumentSymbols,
+                Some(Path::new("src/a.rs")),
+            ),
+            [3]
         );
     }
 
     #[test]
-    fn reference_results_are_workspace_relative_and_skip_external_paths() {
-        let references = reference_locations(
-            &serde_json::json!([
-                {
-                    "uri": "file:///workspace/src/lib.rs",
-                    "range": {"start": {"line": 4, "character": 8}}
-                },
-                {
-                    "uri": "file:///outside/lib.rs",
-                    "range": {"start": {"line": 0, "character": 0}}
-                }
-            ]),
-            Path::new("/workspace"),
+    fn rust_workspace_results_require_the_exact_open_document_revision_set() {
+        let mut documents = BTreeMap::from([
+            (PathBuf::from("src/lib.rs"), Document { contents: String::new(), fingerprint: String::new(), saved_contents: String::new(), version: 4 }),
+            (PathBuf::from("src/game.rs"), Document { contents: String::new(), fingerprint: String::new(), saved_contents: String::new(), version: 9 }),
+        ]);
+        let snapshot = BTreeMap::from([
+            (PathBuf::from("src/lib.rs"), 4),
+            (PathBuf::from("src/game.rs"), 9),
+        ]);
+        assert!(workspace_versions_match(&snapshot, &documents));
+
+        documents.get_mut(Path::new("src/game.rs")).unwrap().version += 1;
+        assert!(!workspace_versions_match(&snapshot, &documents));
+        documents.get_mut(Path::new("src/game.rs")).unwrap().version = 9;
+        documents.remove(Path::new("src/lib.rs"));
+        assert!(!workspace_versions_match(&snapshot, &documents));
+    }
+
+    #[test]
+    fn toml_semantics_preserve_nested_source_ranges_and_utf16_positions() {
+        let source = "title = \"λ\"\n\n[[root.content]]\nid = \"ghf/example\"\nversion = \"0.1.0\"\n";
+        let objects = super::toml_semantics::parse_toml_semantic_objects(Path::new("Workspace.vapor.toml"), source).unwrap();
+        assert_eq!(objects[0].id.domain, "vapor-workspace");
+        assert_eq!(objects[0].selection_range.start.line, 0);
+        let root = &objects[1];
+        assert_eq!(root.name, "root");
+        let content = &root.children[0];
+        assert_eq!(content.name, "content");
+        let entry = &content.children[0];
+        assert_eq!(entry.name, "[0]");
+        assert_eq!(entry.children[0].name, "id");
+        assert_eq!(entry.children[0].detail.as_deref(), Some("string"));
+        assert!(entry.children[0].selection_range.start.line > entry.selection_range.start.line);
+    }
+
+    #[test]
+    fn vapor_manifest_objects_explain_identity_and_content_references() {
+        let source = "[packagepack]\nname = \"demo\"\nversion = \"0.1.0\"\n[packagepack.game]\nid = \"ghf-studios/example/game\"\n";
+        let objects = super::toml_semantics::parse_toml_semantic_objects(Path::new("Packagepack.vapor.toml"), source)
+            .expect("valid Vapor TOML");
+        let pack = &objects[0];
+        assert_eq!(pack.id.domain, "vapor-packagepack");
+        let name = pack.children.iter().find(|child| child.name == "name").unwrap();
+        assert_eq!(name.attributes, ["Declared local identity"]);
+        let game = pack.children.iter().find(|child| child.name == "game").unwrap();
+        assert_eq!(game.name, "game");
+        assert_eq!(game.children[0].attributes, ["Vapor content reference"]);
+        assert_eq!(game.children[0].id.qualified_name(), "packagepack.game.id");
+    }
+
+    #[test]
+    fn toml_semantics_index_inline_tables_and_array_entries_without_values() {
+        let source = "items = [{ id = \"private-value\", flags = [\"a\", \"b\"] }]\n";
+        let objects = super::toml_semantics::parse_toml_semantic_objects(Path::new("Packagepack.vapor.toml"), source)
+            .expect("valid TOML");
+        let items = &objects[0];
+        assert_eq!(items.kind, SemanticObjectKind::Array);
+        let entry = &items.children[0];
+        assert_eq!(entry.kind, SemanticObjectKind::Configuration);
+        assert_eq!(entry.children[0].name, "id");
+        assert_eq!(entry.children[0].detail.as_deref(), Some("string"));
+        assert!(!format!("{objects:?}").contains("private-value"));
+        assert_eq!(items.children[0].children[1].children.len(), 2);
+    }
+
+    #[test]
+    fn xml_parse_errors_anchor_the_parser_offset_without_copying_source_values() {
+        let source = "<root><item value=\"secret-marker\"></root>";
+        let error = super::xml_semantics::parse_xml_semantic_objects(Path::new("config.xml"), source)
+            .expect_err("mismatched XML elements");
+        let diagnostic = super::xml_parse_diagnostic(Path::new("config.xml"), source, &error);
+        assert_eq!(diagnostic.code.as_deref(), Some("vapor.xml.parse"));
+        assert!(diagnostic.primary.is_some());
+        assert!(!diagnostic.message.contains("secret-marker"));
+        assert!(!diagnostic.raw_payload.contains("secret-marker"));
+    }
+
+    #[test]
+    fn toml_parse_errors_are_anchored_and_do_not_retain_source_values() {
+        let source = "secret = \"sensitive-value\"\n[broken\n";
+        let error = super::toml_semantics::parse_toml_semantic_objects(Path::new("Vapor.toml"), source)
+            .expect_err("malformed TOML should be rejected");
+        let diagnostic = toml_parse_diagnostic(Path::new("Vapor.toml"), source, &error);
+        assert_eq!(diagnostic.origin, vapor_gui_core::DiagnosticOrigin::Vapor);
+        assert_eq!(diagnostic.code.as_deref(), Some("vapor.toml.parse"));
+        assert!(diagnostic.primary.as_ref().is_some_and(|span| span.primary));
+        assert!(!diagnostic.raw_payload.contains("sensitive-value"));
+    }
+
+    #[test]
+    fn rust_labels_hide_extensions_and_use_shortest_unique_module_path() {
+        let candidates = [
+            Path::new("crates/engine/src/game/mod.rs").to_path_buf(),
+            Path::new("crates/editor/src/game/mod.rs").to_path_buf(),
+            Path::new("crates/engine/src/main.rs").to_path_buf(),
+        ];
+        assert_eq!(rust_label_parts(&candidates[2]), ["main"]);
+        assert_eq!(file_display_label(&candidates[2], &candidates), "main");
+        assert_eq!(shortest_rust_label(&candidates[0], &candidates), "engine/game");
+        assert_eq!(shortest_rust_label(&candidates[1], &candidates), "editor/game");
+    }
+
+    #[test]
+    fn rust_tree_ordering_is_limited_to_actual_cargo_crate_roots() {
+        let files = [
+            PathBuf::from("Cargo.toml"),
+            PathBuf::from("scripts/helper.rs"),
+            PathBuf::from("crates/core/Cargo.toml"),
+            PathBuf::from("crates/core/src/lib.rs"),
+            PathBuf::from("crates/core/src/z.rs"),
+            PathBuf::from("crates/core/src/a/mod.rs"),
+        ];
+        assert_eq!(
+            rust_crate_roots(&files),
+            std::collections::BTreeSet::from([PathBuf::from("crates/core")])
+        );
+        let crate_roots = rust_crate_roots(&files);
+        assert_eq!(
+            workspace_tree_ordering(Path::new(""), &crate_roots),
+            super::WorkspaceTreeOrdering::DirectoriesFirst
         );
         assert_eq!(
-            references,
-            [ReferenceLocation {
+            workspace_tree_ordering(Path::new("crates/core"), &crate_roots),
+            super::WorkspaceTreeOrdering::Alphabetical
+        );
+        assert_eq!(
+            workspace_tree_ordering(Path::new("docs"), &crate_roots),
+            super::WorkspaceTreeOrdering::DirectoriesFirst
+        );
+        let all_files = [
+            PathBuf::from("crates/core/src/main.rs"),
+            PathBuf::from("crates/core/src/a/mod.rs"),
+            PathBuf::from("crates/other/src/main.rs"),
+        ];
+        assert_eq!(shortest_rust_label(&all_files[0], &all_files), "core/main");
+        assert_eq!(shortest_rust_label(&all_files[1], &all_files), "a");
+        assert_eq!(shortest_rust_label(&all_files[2], &all_files), "other/main");
+    }
+
+    #[test]
+    fn reference_results_are_workspace_relative_and_skip_external_paths() {
+        let mut locations = (0..650)
+            .map(|_| serde_json::json!({
+                "uri": "file:///workspace/src/lib.rs",
+                "range": {"start": {"line": 4, "character": 8}}
+            }))
+            .collect::<Vec<_>>();
+        locations.push(serde_json::json!({
+            "uri": "file:///outside/lib.rs",
+            "range": {"start": {"line": 0, "character": 0}}
+        }));
+        let (references, omitted) = reference_locations(
+            &serde_json::Value::Array(locations),
+            Path::new("/workspace"),
+        );
+        assert_eq!(references.len(), 500, "reference results must be bounded");
+        assert_eq!(omitted, 150, "the UI should explain its visible-result cap");
+        assert_eq!(
+            references[0],
+            ReferenceLocation {
                 path: Path::new("src/lib.rs").to_path_buf(),
-                line: 5,
-                character: 9,
-            }]
+                line: 4,
+                character: 8,
+            },
+            "LSP source positions stay zero-based UTF-16 offsets for navigation"
         );
     }
 
@@ -2614,8 +4927,66 @@ mod tests {
             lsp_position(source, 3),
             serde_json::json!({"line": 0, "character": 4})
         );
-        assert_eq!(position_to_byte_offset(source, 0, 4), "aλ🦀".len());
-        assert_eq!(position_to_byte_offset(source, 1, 2), "aλ🦀\r\nne".len());
+        assert_eq!(position_to_byte_offset(source, 0, 4), Some("aλ🦀".len()));
+        assert_eq!(position_to_byte_offset(source, 1, 2), Some("aλ🦀\r\nne".len()));
+    }
+
+    #[test]
+    fn selecting_a_semantic_object_highlights_its_current_source_range() {
+        let source = "struct Ship {\n    velocity: Vec3,\n}\n";
+        let object = vapor_gui_core::semantic::SemanticObject {
+            id: vapor_gui_core::semantic::SemanticObjectId::new(
+                "rust",
+                "src/components.rs",
+                vec!["Ship".to_owned()],
+            ),
+            kind: SemanticObjectKind::Component,
+            name: "Ship".to_owned(),
+            detail: None,
+            range: vapor_gui_core::semantic::SemanticRange {
+                start: vapor_gui_core::semantic::SemanticPosition { line: 0, character: 0 },
+                end: vapor_gui_core::semantic::SemanticPosition { line: 2, character: 1 },
+            },
+            selection_range: vapor_gui_core::semantic::SemanticRange::default(),
+            attributes: Vec::new(),
+            children: Vec::new(),
+        };
+        let reference = object.reference(5);
+        let mut index = vapor_gui_core::semantic::SemanticWorkspaceIndex::default();
+        index.replace_document("src/components.rs", 5, vec![object]);
+
+        assert_eq!(
+            semantic_object_byte_range(&index, &reference, source),
+            Some(0..source.find("}\n").unwrap() + 1),
+        );
+        index.replace_document("src/components.rs", 6, Vec::new());
+        assert!(semantic_object_byte_range(&index, &reference, source).is_none());
+    }
+
+    #[test]
+    fn large_rust_files_disable_semantic_expansion_without_losing_editing_diagnostic() {
+        let source = "x".repeat(vapor_gui_core::semantic::MAX_SEMANTIC_DOCUMENT_BYTES + 1);
+        let parsed = super::rust_semantics::parse_semantic_document_symbols(
+            &serde_json::json!([{"name":"large"}]),
+            Path::new("src/large.rs"),
+            1,
+            &source,
+        );
+        let diagnostic = semantic_source_limit_diagnostic();
+
+        assert!(parsed.objects.is_empty());
+        assert!(parsed.truncated);
+        assert_eq!(diagnostic.code.as_deref(), Some("vapor.semantic.source-limit"));
+        assert!(diagnostic.message.contains("editing remains available"));
+        assert!(diagnostic.raw_payload.len() < 256);
+    }
+
+    #[test]
+    fn invalid_lsp_coordinates_are_rejected_instead_of_clamped() {
+        let source = "a🦀\nnext";
+        assert_eq!(position_to_byte_offset(source, 0, 2), None);
+        assert_eq!(position_to_byte_offset(source, 0, 4), None);
+        assert_eq!(position_to_byte_offset(source, 2, 0), None);
     }
 
     #[test]
@@ -2653,6 +5024,21 @@ mod tests {
             apply_text_edits("abcdef", edits.as_array().unwrap()),
             Err("formatting edits overlap")
         );
+    }
+
+    #[test]
+    fn workspace_edits_reject_out_of_range_and_split_surrogate_positions() {
+        let split_surrogate = serde_json::json!([{
+            "range": {"start": {"line": 0, "character": 2}, "end": {"line": 0, "character": 3}},
+            "newText": "x"
+        }]);
+        assert!(apply_text_edits("a🦀", split_surrogate.as_array().unwrap()).is_err());
+
+        let invalid_line = serde_json::json!([{
+            "range": {"start": {"line": 1, "character": 0}, "end": {"line": 1, "character": 0}},
+            "newText": "x"
+        }]);
+        assert!(apply_text_edits("a🦀", invalid_line.as_array().unwrap()).is_err());
     }
 
     #[test]
@@ -2721,15 +5107,89 @@ mod tests {
 
         assert_eq!(
             document_tab_label(Path::new("src/a/mod.rs"), &open),
-            "a/mod.rs"
+            "a"
         );
         assert_eq!(
             document_tab_label(Path::new("src/b/mod.rs"), &open),
-            "b/mod.rs"
+            "b"
         );
         assert_eq!(
             document_tab_label(Path::new("src/main.rs"), &open),
-            "main.rs"
+            "main"
         );
     }
+    #[test]
+    fn canonical_rust_item_templates_follow_the_selected_module() {
+        let source = "//! Components for the game.\n";
+        let rendered = render_canonical_rust_item(
+            Path::new("src/components.rs"),
+            source,
+            "Ship",
+        )
+        .expect("component template");
+        assert_eq!(
+            rendered,
+            "//! Components for the game.\n\n#[derive(bevy::prelude::Component)]\npub struct Ship;\n"
+        );
+        assert_eq!(
+            render_canonical_rust_item(Path::new("src/types.rs"), "", "Ship").unwrap(),
+            "pub struct Ship;\n"
+        );
+    }
+
+    #[test]
+    fn canonical_rust_item_templates_reject_invalid_or_duplicate_names() {
+        let path = Path::new("src/components.rs");
+        assert!(render_canonical_rust_item(path, "", "not a type").is_err());
+        assert!(render_canonical_rust_item(path, "pub struct Ship;", "Ship").is_err());
+        assert!(render_canonical_rust_item(path, "pub fn Ship() {}", "Ship").is_err());
+        assert!(render_canonical_rust_item(path, "use crate::Existing as Ship;", "Ship").is_err());
+        assert!(render_canonical_rust_item(path, "pub mod Ship {}", "Ship").is_err());
+        assert!(render_canonical_rust_item(path, "", "ship").is_err());
+        assert!(render_canonical_rust_item(path, "", &"A".repeat(129)).is_err());
+        assert!(render_canonical_rust_item(Path::new("src/functions.rs"), "", "buildScene").is_err());
+        assert!(render_canonical_rust_item(Path::new("src/constants.rs"), "", "Title").is_err());
+        assert!(render_canonical_rust_item(Path::new("src/functions.rs"), "pub const run: &str = \"\";", "run").is_err());
+        assert!(render_canonical_rust_item(Path::new("src/functions.rs"), "not rust", "new_item").is_err());
+        assert!(render_canonical_rust_item(Path::new("tests/components.rs"), "", "Ship").is_err());
+        assert!(render_canonical_rust_item(path, "pub struct r#type;", "r#type").is_err());
+    }
+
+    #[test]
+    fn canonical_rust_templates_only_enable_inside_a_cargo_src_tree() {
+        let roots = BTreeSet::from([PathBuf::from("crate")]);
+        assert!(canonical_rust_item_kind(Path::new("crate/src/components.rs"), &roots).is_some());
+        assert!(canonical_rust_item_kind(Path::new("crate/tests/components.rs"), &roots).is_none());
+        assert!(canonical_rust_item_kind(Path::new("other/src/components.rs"), &roots).is_none());
+        assert!(canonical_rust_item_kind(Path::new("crate/src/components.txt"), &roots).is_none());
+    }
+
+    #[test]
+    fn canonical_rust_item_templates_cover_each_owned_module_kind() {
+        for (path, name, expected) in [
+            ("src/components.rs", "Ship", "bevy::prelude::Component"),
+            ("src/resources.rs", "Assets", "bevy::prelude::Resource"),
+            ("src/events.rs", "Changed", "bevy::prelude::Event"),
+            ("src/types.rs", "GameState", "pub struct GameState;"),
+            ("src/functions.rs", "build_scene", "pub fn build_scene()"),
+            ("src/systems.rs", "update_scene", "pub fn update_scene()"),
+            ("src/run_conditions.rs", "is_ready", "pub fn is_ready() -> bool"),
+            ("src/constants.rs", "TITLE", "pub const TITLE: &str"),
+            ("src/statics.rs", "DEFAULT_TITLE", "pub static DEFAULT_TITLE: &str"),
+        ] {
+            let rendered = render_canonical_rust_item(Path::new(path), "", name).unwrap();
+            assert!(rendered.contains(expected), "{path} should use its own template");
+            syn::parse_file(&rendered).expect("template produces valid Rust syntax");
+        }
+        assert!(matches!(
+            CanonicalRustItemKind::for_document(Path::new("src/systems.rs")),
+            Some(CanonicalRustItemKind::System)
+        ));
+        assert!(matches!(
+            CanonicalRustItemKind::for_document(Path::new("src/run_conditions.rs")),
+            Some(CanonicalRustItemKind::RunCondition)
+        ));
+        assert!(CanonicalRustItemKind::for_document(Path::new("src/lib.rs")).is_none());
+    }
+
 }

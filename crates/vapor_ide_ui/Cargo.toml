@@ -10,3 +10,7 @@ vapor_client = { path = "../../../Vapor/crates/vapor_client" }
 vapor_client_protocol = { path = "../../../Vapor/crates/vapor_client_protocol" }
 vapor_client_domain = { path = "../../../Vapor/crates/vapor_client_domain" }
 serde_json = "1"
+syn = { version = "2", features = ["full"] }
+quote = "1"
+toml_edit = "=0.22.27"
+quick-xml = "=0.41.0"

@@ -4,6 +4,13 @@ use std::{
 };
 
 /// A stable, searchable hierarchy over paths returned by the Vapor workspace service.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceTreeOrdering {
+    #[default]
+    DirectoriesFirst,
+    Alphabetical,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct WorkspaceFileTree {
     entries: BTreeMap<String, WorkspaceTreeEntry>,
@@ -76,6 +83,20 @@ impl WorkspaceFileTree {
         &self.entries
     }
 
+    /// Return a display order without changing the tree's canonical keyed storage.
+    pub fn ordered_entries(&self, ordering: WorkspaceTreeOrdering) -> Vec<(&str, &WorkspaceTreeEntry)> {
+        let mut entries = self.entries.iter().map(|(name, entry)| (name.as_str(), entry)).collect::<Vec<_>>();
+        entries.sort_by(|(left_name, left), (right_name, right)| match ordering {
+            WorkspaceTreeOrdering::Alphabetical => left_name.cmp(right_name),
+            WorkspaceTreeOrdering::DirectoriesFirst => {
+                let left_is_file = matches!(left, WorkspaceTreeEntry::File { .. });
+                let right_is_file = matches!(right, WorkspaceTreeEntry::File { .. });
+                left_is_file.cmp(&right_is_file).then_with(|| left_name.cmp(right_name))
+            }
+        });
+        entries
+    }
+
     pub fn contains_matching_file(&self, filter: &str) -> bool {
         self.contains_matching_file_normalized(&filter.to_lowercase())
     }
@@ -131,6 +152,23 @@ mod tests {
             tree.entries().get("src"),
             Some(WorkspaceTreeEntry::Directory(_))
         ));
+    }
+
+    #[test]
+    fn directory_first_and_rust_alphabetical_orders_are_explicit() {
+        let files = [
+            PathBuf::from("z_file.rs"),
+            PathBuf::from("a_folder/mod.rs"),
+            PathBuf::from("b_file.rs"),
+            PathBuf::from("m_folder/mod.rs"),
+        ];
+        let tree = WorkspaceFileTree::new(&files);
+        let folder_first = tree.ordered_entries(super::WorkspaceTreeOrdering::DirectoriesFirst)
+            .into_iter().map(|(name, _)| name.to_owned()).collect::<Vec<_>>();
+        assert_eq!(folder_first, ["a_folder", "m_folder", "b_file.rs", "z_file.rs"]);
+        let alphabetical = tree.ordered_entries(super::WorkspaceTreeOrdering::Alphabetical)
+            .into_iter().map(|(name, _)| name.to_owned()).collect::<Vec<_>>();
+        assert_eq!(alphabetical, ["a_folder", "b_file.rs", "m_folder", "z_file.rs"]);
     }
 
     #[test]

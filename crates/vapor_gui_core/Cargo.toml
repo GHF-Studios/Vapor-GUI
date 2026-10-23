@@ -5,6 +5,11 @@ edition.workspace = true
 
 [dependencies]
 eframe.workspace = true
+serde = { version = "1", features = ["derive"] }
 vapor_console_core = { path = "../../../Vapor/crates/vapor_console_core" }
+vapor_client_protocol = { path = "../../../Vapor/crates/vapor_client_protocol" }
 
 egui_code_editor = { version = "=0.2.24", default-features = false }
+
+[dev-dependencies]
+serde_json = "1"

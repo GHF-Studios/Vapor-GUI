@@ -11,5 +11,7 @@ Vapor Client service with the pinned toolchain. The IDE synchronizes open Rust
 files and provides language diagnostics, definition navigation, hover, and
 completion; broader LSP features and external dependency source editing remain
 under development.
+See [`docs/ide.md`](docs/ide.md) for the current IDE workflow and its semantic
+indexing/build boundaries.
 The precompiled `vapor-installer` remains available as the recovery path when
 the graphical products are not installed.
