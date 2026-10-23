@@ -66,6 +66,7 @@ impl IdeApp {
         }
         self.stop_language_server();
         self.semantic.problems.clear();
+        self.semantic.problem_filter = Default::default();
         self.semantic.pending_workspace_symbol = None;
         self.language_server.workspace_symbols.clear();
         self.language_server.workspace_symbol_query = None;
@@ -388,8 +389,13 @@ impl IdeApp {
                         self.workspace.rust_crate_roots.clear();
                         self.editor.documents.clear();
                         self.semantic.index = SemanticWorkspaceIndex::default();
+                        self.semantic.match_cache = Default::default();
                         self.semantic.selected = None;
                         self.semantic.pending_workspace_symbol = None;
+                        self.semantic.edit_preview = None;
+                        self.semantic.workspace_edit_preview = None;
+                        self.semantic.rename_target = None;
+                        self.semantic.rename_input.clear();
                         self.editor.selected_file = None;
                         self.start_language_server();
                         self.workspace.status = format!("Opened {}", root.display());
