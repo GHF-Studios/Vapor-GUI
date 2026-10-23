@@ -146,30 +146,21 @@ impl ProblemStore {
         path: &Path,
         range: SemanticRange,
     ) -> Vec<&StructuredDiagnostic> {
-        self.source
+        let mut diagnostics = self
+            .source
             .get(path)
             .into_iter()
             .flatten()
-            .filter(|diagnostic| {
-                diagnostic.primary.as_ref().is_some_and(|span| {
-                    let start = (
-                        span.start_line.saturating_sub(1),
-                        span.start_column.saturating_sub(1),
-                    );
-                    let end = (
-                        span.end_line.saturating_sub(1),
-                        span.end_column.saturating_sub(1),
-                    );
-                    let object_start = (range.start.line, range.start.character);
-                    let object_end = (range.end.line, range.end.character);
-                    if start == end {
-                        object_start <= start && start <= object_end
-                    } else {
-                        start < object_end && end > object_start
-                    }
-                })
-            })
-            .collect()
+            .filter(|diagnostic| diagnostic_overlaps_range(diagnostic, range))
+            .collect::<Vec<_>>();
+        diagnostics.extend(
+            self.build
+                .iter()
+                .filter(|row| row.path.as_deref() == Some(path))
+                .filter(|row| diagnostic_overlaps_range(&row.diagnostic, range))
+                .map(|row| &row.diagnostic),
+        );
+        diagnostics
     }
 
     pub(super) fn count(&self) -> usize {
@@ -230,6 +221,26 @@ impl ProblemStore {
         }
         rows
     }
+}
+
+fn diagnostic_overlaps_range(diagnostic: &StructuredDiagnostic, range: SemanticRange) -> bool {
+    diagnostic.primary.as_ref().is_some_and(|span| {
+        let start = (
+            span.start_line.saturating_sub(1),
+            span.start_column.saturating_sub(1),
+        );
+        let end = (
+            span.end_line.saturating_sub(1),
+            span.end_column.saturating_sub(1),
+        );
+        let object_start = (range.start.line, range.start.character);
+        let object_end = (range.end.line, range.end.character);
+        if start == end {
+            object_start <= start && start <= object_end
+        } else {
+            start < object_end && end > object_start
+        }
+    })
 }
 
 pub(super) fn truncate_diagnostic_payload(payload: &str) -> String {
@@ -394,6 +405,51 @@ mod tests {
             raw_payload: String::new(),
             context: Default::default(),
         }
+    }
+
+    #[test]
+    fn semantic_inspector_includes_overlapping_build_diagnostics_for_the_document() {
+        let mut store = ProblemStore::default();
+        store.begin_build("build-1");
+        let mut matching = source_diagnostic(5, 4, 10);
+        matching.origin = DiagnosticOrigin::Cargo;
+        matching.code = Some("rustc.type-mismatch".to_owned());
+        store.push_build(
+            "build-1",
+            ProblemRow {
+                path: Some(PathBuf::from("src/components.rs")),
+                action: Some("check".to_owned()),
+                diagnostic: matching,
+            },
+        );
+        let mut other_document = source_diagnostic(5, 4, 10);
+        other_document.origin = DiagnosticOrigin::Cargo;
+        store.push_build(
+            "build-1",
+            ProblemRow {
+                path: Some(PathBuf::from("src/systems.rs")),
+                action: Some("check".to_owned()),
+                diagnostic: other_document,
+            },
+        );
+
+        let overlapping = store.for_semantic_range(
+            Path::new("src/components.rs"),
+            SemanticRange {
+                start: SemanticPosition {
+                    line: 4,
+                    character: 0,
+                },
+                end: SemanticPosition {
+                    line: 5,
+                    character: 2,
+                },
+            },
+        );
+
+        assert_eq!(overlapping.len(), 1);
+        assert_eq!(overlapping[0].origin, DiagnosticOrigin::Cargo);
+        assert_eq!(overlapping[0].code.as_deref(), Some("rustc.type-mismatch"));
     }
 
     #[test]

@@ -23,6 +23,8 @@ impl IdeApp {
                 ui.colored_label(egui::Color32::LIGHT_BLUE, status);
             }
             let mut diagnostic_navigation = None;
+            let mut related_navigation = None;
+            let mut quick_fix_request = None;
             if let Some(relative_path) = self
                 .workspace
                 .root
@@ -53,12 +55,12 @@ impl IdeApp {
                         };
                         ui.horizontal_wrapped(|ui| {
                             ui.colored_label(severity.1, severity.0);
-                            ui.weak(format!("{:?}", diagnostic.origin));
+                            ui.weak(diagnostic_origin_label(diagnostic.origin));
                             if let Some(code) = &diagnostic.code {
                                 ui.monospace(code);
                             }
-                            if ui.small_button("Open").clicked()
-                                && let Some(span) = &diagnostic.primary
+                            if let Some(span) = &diagnostic.primary
+                                && ui.small_button("Open").clicked()
                             {
                                 diagnostic_navigation = Some((
                                     object.id.document.clone(),
@@ -66,8 +68,57 @@ impl IdeApp {
                                     span.start_column.saturating_sub(1) as usize,
                                 ));
                             }
+                            if self.language_server.ready
+                                && diagnostic.origin
+                                    == vapor_gui_core::DiagnosticOrigin::RustAnalyzer
+                                && object
+                                    .id
+                                    .document
+                                    .extension()
+                                    .is_some_and(|extension| extension == "rs")
+                                && self.editor.documents.contains_key(&object.id.document)
+                                && ui.small_button("Quick fix").clicked()
+                            {
+                                quick_fix_request = Some(diagnostic.clone());
+                            }
+                            if !diagnostic.related.is_empty() {
+                                let root = self.workspace.root.as_deref();
+                                ui.menu_button(
+                                    format!("Related ({})", diagnostic.related.len()),
+                                    |ui| {
+                                        for related in &diagnostic.related {
+                                            let label = format!(
+                                                "{}:{}:{} · {}",
+                                                related.file,
+                                                related.start_line,
+                                                related.start_column,
+                                                related
+                                                    .label
+                                                    .as_deref()
+                                                    .unwrap_or("related location")
+                                            );
+                                            if ui.button(label).clicked()
+                                                && let Some(path) = root.and_then(|root| {
+                                                    workspace_diagnostic_path(
+                                                        root,
+                                                        &related.file,
+                                                        &self.workspace.files,
+                                                    )
+                                                })
+                                            {
+                                                related_navigation = Some((
+                                                    path,
+                                                    related.start_line.saturating_sub(1) as usize,
+                                                    related.start_column.saturating_sub(1) as usize,
+                                                ));
+                                            }
+                                        }
+                                    },
+                                );
+                            }
                         });
-                        ui.label(&diagnostic.message);
+                        ui.label(&diagnostic.message)
+                            .on_hover_text(diagnostics::diagnostic_details(diagnostic));
                     }
                 }
             }
@@ -160,6 +211,12 @@ impl IdeApp {
             }
             if let Some((path, line, character)) = diagnostic_navigation {
                 self.navigate_to_workspace_location(&path, line, character);
+            }
+            if let Some((path, line, character)) = related_navigation {
+                self.navigate_to_workspace_location(&path, line, character);
+            }
+            if let Some(diagnostic) = quick_fix_request {
+                self.request_diagnostic_code_actions(&object.id.document, &diagnostic);
             }
             if let Some(member) = selected_member {
                 if self.semantic.selected.as_ref() != Some(&member) {

@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 eframe.workspace = true
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 vapor_console_core = { path = "../../../Vapor/crates/vapor_console_core" }
 vapor_client_protocol = { path = "../../../Vapor/crates/vapor_client_protocol" }
 

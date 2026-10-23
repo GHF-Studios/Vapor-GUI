@@ -1,4 +1,5 @@
 use eframe::egui;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use vapor_console_core::{
     ConsoleFilter, ConsoleHistory, ConsoleLevel, ConsoleRecord, ConsoleStyleRole, PromptHistory,
@@ -14,6 +15,22 @@ const LEVELS: [ConsoleLevel; 8] = [
     ConsoleLevel::Input,
     ConsoleLevel::System,
 ];
+
+/// A source anchor carried from a typed diagnostic into a console row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConsoleNavigationTarget {
+    pub file: String,
+    pub line: u32,
+    pub column: u32,
+    pub label: Option<String>,
+}
+
+/// Actions requested by an interactive console surface.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConsolePanelResult {
+    pub command: Option<String>,
+    pub navigation: Option<ConsoleNavigationTarget>,
+}
 
 /// UI state shared by the Launcher, Studio and IDE console surfaces.
 ///
@@ -100,8 +117,27 @@ impl ConsolePanelState {
     /// Draw a dark, filterable console. Read-only surfaces omit the prompt.
     /// Returns one submitted command; the caller sends it to Vapor's service.
     pub fn show(&mut self, ui: &mut egui::Ui, prompt_enabled: bool) -> Option<String> {
+        self.show_inner(ui, prompt_enabled, false).command
+    }
+
+    /// Draw the console with source actions for hosts that own a workspace.
+    pub fn show_with_navigation(
+        &mut self,
+        ui: &mut egui::Ui,
+        prompt_enabled: bool,
+    ) -> ConsolePanelResult {
+        self.show_inner(ui, prompt_enabled, true)
+    }
+
+    fn show_inner(
+        &mut self,
+        ui: &mut egui::Ui,
+        prompt_enabled: bool,
+        navigation_enabled: bool,
+    ) -> ConsolePanelResult {
         self.view_cache.refresh(&self.history, &self.filter);
         let mut submitted = None;
+        let mut navigation = None;
         egui::Frame::new()
             .fill(egui::Color32::from_rgb(8, 9, 12))
             .inner_margin(egui::Margin::same(8))
@@ -208,7 +244,12 @@ impl ConsolePanelState {
                     }
                 });
                 ui.separator();
-                show_records(ui, &self.history, &self.view_cache.filtered_indices);
+                navigation = show_records_with_navigation(
+                    ui,
+                    &self.history,
+                    &self.view_cache.filtered_indices,
+                    navigation_enabled,
+                );
                 if prompt_enabled {
                     ui.separator();
                     let response = ui.add(
@@ -254,16 +295,29 @@ impl ConsolePanelState {
                     }
                 }
             });
-        submitted
+        ConsolePanelResult {
+            command: submitted,
+            navigation,
+        }
     }
 }
 
 /// Draw timestamped, fixed-height console rows while only creating widgets for
 /// visible records. Long messages and metadata remain available on hover.
 pub fn show_records(ui: &mut egui::Ui, history: &ConsoleHistory, indices: &[usize]) {
+    let _ = show_records_with_navigation(ui, history, indices, false);
+}
+
+fn show_records_with_navigation(
+    ui: &mut egui::Ui,
+    history: &ConsoleHistory,
+    indices: &[usize],
+    navigation_enabled: bool,
+) -> Option<ConsoleNavigationTarget> {
     if indices.is_empty() {
-        return;
+        return None;
     }
+    let mut navigation = None;
 
     let row_height = ui
         .text_style_height(&egui::TextStyle::Body)
@@ -312,8 +366,34 @@ pub fn show_records(ui: &mut egui::Ui, history: &ConsoleHistory, indices: &[usiz
                         };
                         ui.colored_label(color, &stream.value);
                     }
+                    let primary = record
+                        .fields
+                        .iter()
+                        .find(|field| field.key == "navigation.primary")
+                        .and_then(|field| {
+                            serde_json::from_str::<ConsoleNavigationTarget>(&field.value).ok()
+                        });
+                    let related = record
+                        .fields
+                        .iter()
+                        .filter(|field| field.key == "navigation.related")
+                        .filter_map(|field| {
+                            serde_json::from_str::<ConsoleNavigationTarget>(&field.value).ok()
+                        })
+                        .collect::<Vec<_>>();
+                    let open_width = if navigation_enabled && primary.is_some() {
+                        48.0
+                    } else {
+                        0.0
+                    };
+                    let related_width = if navigation_enabled && !related.is_empty() {
+                        82.0
+                    } else {
+                        0.0
+                    };
+                    let label_width = (ui.available_width() - open_width - related_width).max(1.0);
                     let response = ui.add_sized(
-                        [ui.available_width(), row_height],
+                        [label_width, row_height],
                         egui::Label::new(
                             egui::RichText::new(&record.message)
                                 .monospace()
@@ -322,9 +402,32 @@ pub fn show_records(ui: &mut egui::Ui, history: &ConsoleHistory, indices: &[usiz
                         .truncate(),
                     );
                     response.on_hover_text(details);
+                    if navigation_enabled
+                        && let Some(target) = primary
+                        && ui.small_button("Open").clicked()
+                    {
+                        navigation = Some(target);
+                    }
+                    if navigation_enabled && !related.is_empty() {
+                        ui.menu_button(format!("Related {}", related.len()), |ui| {
+                            for target in &related {
+                                let label = format!(
+                                    "{}:{}:{} · {}",
+                                    target.file,
+                                    target.line,
+                                    target.column,
+                                    target.label.as_deref().unwrap_or("related location")
+                                );
+                                if ui.button(label).clicked() {
+                                    navigation = Some(target.clone());
+                                }
+                            }
+                        });
+                    }
                 });
             }
         });
+    navigation
 }
 
 fn format_timestamp(timestamp_unix_ms: u64) -> String {
@@ -430,8 +533,14 @@ pub fn records_from_operation_output(
                 if let Some(label) = &primary.label {
                     record = record.field("location detail", label.clone());
                 }
+                if let Some(target) = console_navigation_target(primary) {
+                    record = record.field("navigation.primary", target);
+                }
             }
             for related in &diagnostic.related {
+                if let Some(target) = console_navigation_target(related) {
+                    record = record.field("navigation.related", target);
+                }
                 let label = related.label.as_deref().unwrap_or("related");
                 record = record.field(
                     "related location",
@@ -451,6 +560,16 @@ pub fn records_from_operation_output(
         records.push(record);
     }
     records
+}
+
+fn console_navigation_target(span: &vapor_console_core::DiagnosticSpan) -> Option<String> {
+    serde_json::to_string(&ConsoleNavigationTarget {
+        file: span.file.clone(),
+        line: span.start_line,
+        column: span.start_column,
+        label: span.label.clone(),
+    })
+    .ok()
 }
 
 #[cfg(test)]
@@ -561,7 +680,15 @@ mod tests {
                     primary: true,
                     label: None,
                 }),
-                related: Vec::new(),
+                related: vec![DiagnosticSpan {
+                    file: "src/types.rs".to_owned(),
+                    start_line: 12,
+                    start_column: 3,
+                    end_line: 12,
+                    end_column: 8,
+                    primary: false,
+                    label: Some("introduced here".to_owned()),
+                }],
 
                 raw_payload: r#"{"reason":"compiler-message"}"#.to_owned(),
                 context: vapor_console_core::DiagnosticContext {
@@ -594,6 +721,27 @@ mod tests {
                 .iter()
                 .any(|field| field.key == "location" && field.value == "src/main.rs:4:5")
         );
+        let primary = records[0]
+            .fields
+            .iter()
+            .find(|field| field.key == "navigation.primary")
+            .and_then(|field| {
+                serde_json::from_str::<super::ConsoleNavigationTarget>(&field.value).ok()
+            })
+            .expect("structured primary navigation target");
+        assert_eq!(primary.file, "src/main.rs");
+        assert_eq!((primary.line, primary.column), (4, 5));
+
+        let related = records[0]
+            .fields
+            .iter()
+            .find(|field| field.key == "navigation.related")
+            .and_then(|field| {
+                serde_json::from_str::<super::ConsoleNavigationTarget>(&field.value).ok()
+            })
+            .expect("structured related navigation target");
+        assert_eq!(related.file, "src/types.rs");
+        assert_eq!(related.label.as_deref(), Some("introduced here"));
         assert!(
             records[0]
                 .fields

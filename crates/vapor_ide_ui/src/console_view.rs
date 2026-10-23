@@ -28,7 +28,23 @@ impl IdeApp {
             if self.interface.console.history.is_empty() {
                 ui.weak("Managed commands and toolchain output appear here.");
             }
-            if let Some(command) = self.interface.console.show(ui, true) {
+            let console_result = self.interface.console.show_with_navigation(ui, true);
+            if let Some(target) = console_result.navigation {
+                let path = self.workspace.root.as_deref().and_then(|root| {
+                    workspace_diagnostic_path(root, &target.file, &self.workspace.files)
+                });
+                if let Some(path) = path {
+                    self.navigate_to_workspace_location(
+                        &path,
+                        target.line.saturating_sub(1) as usize,
+                        target.column.saturating_sub(1) as usize,
+                    );
+                } else {
+                    self.workspace.status =
+                        "This console location is not inside the open workspace.".to_owned();
+                }
+            }
+            if let Some(command) = console_result.command {
                 self.submit_console_command(&command);
             }
         } else {
@@ -83,8 +99,8 @@ impl IdeApp {
                             }
                             (None, None) => "workspace".to_owned(),
                         };
-                        let has_quick_fix = diagnostic.origin
-                            == vapor_gui_core::DiagnosticOrigin::RustAnalyzer
+                        let has_quick_fix = self.language_server.ready
+                            && diagnostic.origin == vapor_gui_core::DiagnosticOrigin::RustAnalyzer
                             && path.is_some_and(|path| {
                                 path.extension().is_some_and(|extension| extension == "rs")
                                     && self.editor.documents.contains_key(path)
