@@ -273,7 +273,8 @@ pub fn show_records(ui: &mut egui::Ui, history: &ConsoleHistory, indices: &[usiz
         .stick_to_bottom(true)
         .show_rows(ui, row_height, indices.len(), |ui, visible_rows| {
             for row in visible_rows {
-                let Some(record) = indices.get(row).and_then(|index| history.record_at(*index)) else {
+                let Some(record) = indices.get(row).and_then(|index| history.record_at(*index))
+                else {
                     continue;
                 };
                 let color = match record.level.style_role() {
@@ -340,9 +341,7 @@ fn format_timestamp(timestamp_unix_ms: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{ConsoleViewCache, records_from_operation_output};
-    use vapor_client_protocol::{
-        ClientOrigin, OperationOutputEvent, OperationOutputStream,
-    };
+    use vapor_client_protocol::{ClientOrigin, OperationOutputEvent, OperationOutputStream};
     use vapor_console_core::{
         ConsoleFilter, ConsoleHistory, ConsoleLevel, ConsoleRecord, DiagnosticOrigin,
         DiagnosticSeverity, DiagnosticSpan, StructuredDiagnostic,
@@ -356,27 +355,52 @@ mod tests {
                 .field("origin", "studio")
                 .field("composition", "demo"),
         );
-        history.push(ConsoleRecord::new(2, ConsoleLevel::Error, "cargo", "failed"));
+        history.push(ConsoleRecord::new(
+            2,
+            ConsoleLevel::Error,
+            "cargo",
+            "failed",
+        ));
 
         let mut cache = ConsoleViewCache::default();
         let mut filter = ConsoleFilter::default();
         cache.refresh(&history, &filter);
         assert_eq!(cache.filtered_indices, vec![0, 1]);
-        assert_eq!(cache.sources.iter().cloned().collect::<Vec<_>>(), ["cargo", "service"]);
-        assert_eq!(cache.origins.iter().cloned().collect::<Vec<_>>(), ["studio"]);
-        assert_eq!(cache.compositions.iter().cloned().collect::<Vec<_>>(), ["demo"]);
+        assert_eq!(
+            cache.sources.iter().cloned().collect::<Vec<_>>(),
+            ["cargo", "service"]
+        );
+        assert_eq!(
+            cache.origins.iter().cloned().collect::<Vec<_>>(),
+            ["studio"]
+        );
+        assert_eq!(
+            cache.compositions.iter().cloned().collect::<Vec<_>>(),
+            ["demo"]
+        );
 
         filter.search = "failed".to_owned();
         cache.refresh(&history, &filter);
         assert_eq!(cache.filtered_indices, vec![1]);
-        assert_eq!(history.record_at(cache.filtered_indices[0]).unwrap().message, "failed");
+        assert_eq!(
+            history
+                .record_at(cache.filtered_indices[0])
+                .unwrap()
+                .message,
+            "failed"
+        );
     }
 
     #[test]
     fn console_view_cache_tracks_fifo_eviction_and_clear() {
         let mut history = ConsoleHistory::new(2);
         history.push(ConsoleRecord::new(1, ConsoleLevel::Info, "old", "old row"));
-        history.push(ConsoleRecord::new(2, ConsoleLevel::Info, "kept", "kept row"));
+        history.push(ConsoleRecord::new(
+            2,
+            ConsoleLevel::Info,
+            "kept",
+            "kept row",
+        ));
         let mut cache = ConsoleViewCache::default();
         let filter = ConsoleFilter::default();
         cache.refresh(&history, &filter);
@@ -443,13 +467,46 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].message, "cannot find value `ship`");
         assert_eq!(records[0].level, super::super::ConsoleLevel::Error);
-        assert!(records[0].fields.iter().any(|field| field.key == "code" && field.value == "E0425"));
-        assert!(records[0].fields.iter().any(|field| field.key == "location" && field.value == "src/main.rs:4:5"));
-        assert!(records[0].fields.iter().any(|field| field.key == "domain" && field.value == "rust"));
-        assert!(records[0].fields.iter().any(|field| field.key == "scope" && field.value == "document"));
-        assert!(records[0].fields.iter().any(|field| field.key == "semantic" && field.value == "game::Ship"));
-        assert!(records[0].fields.iter().any(|field| field.key == "raw" && field.value.contains("compiler-message")));
-        let filter = ConsoleFilter { domain: Some("rust".to_owned()), ..Default::default() };
+        assert!(
+            records[0]
+                .fields
+                .iter()
+                .any(|field| field.key == "code" && field.value == "E0425")
+        );
+        assert!(
+            records[0]
+                .fields
+                .iter()
+                .any(|field| field.key == "location" && field.value == "src/main.rs:4:5")
+        );
+        assert!(
+            records[0]
+                .fields
+                .iter()
+                .any(|field| field.key == "domain" && field.value == "rust")
+        );
+        assert!(
+            records[0]
+                .fields
+                .iter()
+                .any(|field| field.key == "scope" && field.value == "document")
+        );
+        assert!(
+            records[0]
+                .fields
+                .iter()
+                .any(|field| field.key == "semantic" && field.value == "game::Ship")
+        );
+        assert!(
+            records[0]
+                .fields
+                .iter()
+                .any(|field| field.key == "raw" && field.value.contains("compiler-message"))
+        );
+        let filter = ConsoleFilter {
+            domain: Some("rust".to_owned()),
+            ..Default::default()
+        };
         assert!(filter.matches(&records[0]));
 
         let mut history = ConsoleHistory::new(8);
@@ -461,8 +518,14 @@ mod tests {
         };
         let mut cache = ConsoleViewCache::default();
         cache.refresh(&history, &filter);
-        assert_eq!(cache.domains.iter().map(String::as_str).collect::<Vec<_>>(), ["rust"]);
-        assert_eq!(cache.scopes.iter().map(String::as_str).collect::<Vec<_>>(), ["document"]);
+        assert_eq!(
+            cache.domains.iter().map(String::as_str).collect::<Vec<_>>(),
+            ["rust"]
+        );
+        assert_eq!(
+            cache.scopes.iter().map(String::as_str).collect::<Vec<_>>(),
+            ["document"]
+        );
         assert_eq!(cache.filtered_indices, [0]);
 
         let unrelated_scope = ConsoleFilter {
@@ -495,8 +558,18 @@ mod tests {
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].message, "one");
         assert_eq!(records[1].message, "two");
-        assert!(records[0].fields.iter().any(|field| field.key == "origin" && field.value == "launcher"));
-        assert!(records[0].fields.iter().any(|field| field.key == "raw" && field.value.contains("compiler-artifact")));
+        assert!(
+            records[0]
+                .fields
+                .iter()
+                .any(|field| field.key == "origin" && field.value == "launcher")
+        );
+        assert!(
+            records[0]
+                .fields
+                .iter()
+                .any(|field| field.key == "raw" && field.value.contains("compiler-artifact"))
+        );
     }
 }
 
@@ -536,7 +609,9 @@ pub fn records_from_operation_output(
         let level = output
             .diagnostic
             .as_ref()
-            .map_or(output.level, |diagnostic| diagnostic.severity.console_level());
+            .map_or(output.level, |diagnostic| {
+                diagnostic.severity.console_level()
+            });
         let mut record = ConsoleRecord::new(
             output.timestamp_unix_ms,
             level,
@@ -554,7 +629,10 @@ pub fn records_from_operation_output(
             record = record.field("composition", composition_id.clone());
         }
         if let Some(diagnostic) = &output.diagnostic {
-            record = record.field("producer", format!("{:?}", diagnostic.origin).to_ascii_lowercase());
+            record = record.field(
+                "producer",
+                format!("{:?}", diagnostic.origin).to_ascii_lowercase(),
+            );
             if let Some(domain) = &diagnostic.context.domain {
                 record = record.field("domain", domain.clone());
             }
@@ -579,7 +657,10 @@ pub fn records_from_operation_output(
             if let Some(primary) = &diagnostic.primary {
                 record = record.field(
                     "location",
-                    format!("{}:{}:{}", primary.file, primary.start_line, primary.start_column),
+                    format!(
+                        "{}:{}:{}",
+                        primary.file, primary.start_line, primary.start_column
+                    ),
                 );
                 if let Some(label) = &primary.label {
                     record = record.field("location detail", label.clone());
@@ -589,7 +670,10 @@ pub fn records_from_operation_output(
                 let label = related.label.as_deref().unwrap_or("related");
                 record = record.field(
                     "related location",
-                    format!("{label}: {}:{}:{}", related.file, related.start_line, related.start_column),
+                    format!(
+                        "{label}: {}:{}:{}",
+                        related.file, related.start_line, related.start_column
+                    ),
                 );
             }
             if let Some(rendered) = &diagnostic.rendered {

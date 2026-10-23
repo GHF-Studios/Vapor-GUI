@@ -1,7 +1,9 @@
-use std::path::Path;
 use super::diagnostics::truncate_diagnostic_payload;
+use std::path::Path;
 
-use vapor_gui_core::semantic::{SemanticObject, SemanticObjectId, SemanticObjectKind, semantic_range_from_byte_span};
+use vapor_gui_core::semantic::{
+    SemanticObject, SemanticObjectId, SemanticObjectKind, semantic_range_from_byte_span,
+};
 
 #[cfg(test)]
 mod tests {
@@ -40,30 +42,42 @@ visibility = "public"
         let objects = parse_toml_semantic_objects(Path::new("Packagepack.vapor.toml"), source)
             .expect("valid packagepack TOML");
 
-        assert!(find(&objects, "packagepack.engine.id")
-            .unwrap()
-            .attributes
-            .contains(&"Vapor content reference".to_owned()));
-        assert!(find(&objects, "packagepack.engine.version")
-            .unwrap()
-            .attributes
-            .contains(&"Vapor version requirement".to_owned()));
-        assert!(find(&objects, "packagepack.engine.workshop-id")
-            .unwrap()
-            .attributes
-            .contains(&"Workshop item identity".to_owned()));
-        assert!(find(&objects, "packagepack.steam.published-file-id")
-            .unwrap()
-            .attributes
-            .contains(&"Workshop item identity".to_owned()));
-        assert!(find(&objects, "packagepack.steam.app-id")
-            .unwrap()
-            .attributes
-            .contains(&"Steam application identity".to_owned()));
-        assert!(find(&objects, "packagepack.binaries")
-            .unwrap()
-            .attributes
-            .contains(&"Runtime executable names".to_owned()));
+        assert!(
+            find(&objects, "packagepack.engine.id")
+                .unwrap()
+                .attributes
+                .contains(&"Vapor content reference".to_owned())
+        );
+        assert!(
+            find(&objects, "packagepack.engine.version")
+                .unwrap()
+                .attributes
+                .contains(&"Vapor version requirement".to_owned())
+        );
+        assert!(
+            find(&objects, "packagepack.engine.workshop-id")
+                .unwrap()
+                .attributes
+                .contains(&"Workshop item identity".to_owned())
+        );
+        assert!(
+            find(&objects, "packagepack.steam.published-file-id")
+                .unwrap()
+                .attributes
+                .contains(&"Workshop item identity".to_owned())
+        );
+        assert!(
+            find(&objects, "packagepack.steam.app-id")
+                .unwrap()
+                .attributes
+                .contains(&"Steam application identity".to_owned())
+        );
+        assert!(
+            find(&objects, "packagepack.binaries")
+                .unwrap()
+                .attributes
+                .contains(&"Runtime executable names".to_owned())
+        );
     }
 
     #[test]
@@ -83,10 +97,30 @@ default = []
 "#;
         let objects = parse_toml_semantic_objects(Path::new("Cargo.toml"), source)
             .expect("valid Cargo manifest");
-        assert!(find(&objects, "package.name").unwrap().attributes.contains(&"Rust package identity".to_owned()));
-        assert!(find(&objects, "package.version").unwrap().attributes.contains(&"Rust package version".to_owned()));
-        assert!(find(&objects, "dependencies.bevy.version").unwrap().attributes.contains(&"Cargo dependency version".to_owned()));
-        assert!(find(&objects, "features.default").unwrap().attributes.contains(&"Cargo feature configuration".to_owned()));
+        assert!(
+            find(&objects, "package.name")
+                .unwrap()
+                .attributes
+                .contains(&"Rust package identity".to_owned())
+        );
+        assert!(
+            find(&objects, "package.version")
+                .unwrap()
+                .attributes
+                .contains(&"Rust package version".to_owned())
+        );
+        assert!(
+            find(&objects, "dependencies.bevy.version")
+                .unwrap()
+                .attributes
+                .contains(&"Cargo dependency version".to_owned())
+        );
+        assert!(
+            find(&objects, "features.default")
+                .unwrap()
+                .attributes
+                .contains(&"Cargo feature configuration".to_owned())
+        );
     }
 
     #[test]
@@ -110,19 +144,50 @@ path = "content/sample-game"
 "#;
         let objects = parse_toml_semantic_objects(Path::new("Workspace.vapor.toml"), source)
             .expect("valid Vapor workspace TOML");
-        assert!(find(&objects, "workspace.organization").unwrap().attributes.contains(&"Vapor identity namespace".to_owned()));
-        assert!(find(&objects, "workspace.binaries").unwrap().attributes.contains(&"Workspace runtime executables".to_owned()));
-        assert!(find(&objects, "toolchain.version").unwrap().attributes.contains(&"Pinned Rust toolchain version".to_owned()));
-        assert!(find(&objects, "project[0].path").unwrap().attributes.contains(&"Registered workspace project path".to_owned()));
+        assert!(
+            find(&objects, "workspace.organization")
+                .unwrap()
+                .attributes
+                .contains(&"Vapor identity namespace".to_owned())
+        );
+        assert!(
+            find(&objects, "workspace.binaries")
+                .unwrap()
+                .attributes
+                .contains(&"Workspace runtime executables".to_owned())
+        );
+        assert!(
+            find(&objects, "toolchain.version")
+                .unwrap()
+                .attributes
+                .contains(&"Pinned Rust toolchain version".to_owned())
+        );
+        assert!(
+            find(&objects, "project[0].path")
+                .unwrap()
+                .attributes
+                .contains(&"Registered workspace project path".to_owned())
+        );
     }
 
     #[test]
     fn large_toml_arrays_and_nesting_obey_the_shared_tree_limits() {
-        let dense = format!("values = [{}]", (0..5_000).map(|value| value.to_string()).collect::<Vec<_>>().join(","));
+        let dense = format!(
+            "values = [{}]",
+            (0..5_000)
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
         let objects = parse_toml_semantic_objects(Path::new("dense-array.toml"), &dense)
             .expect("valid large array");
         assert!(semantic_object_count(&objects) <= vapor_gui_core::semantic::MAX_SEMANTIC_OBJECTS);
-        assert!(objects[0].attributes.iter().any(|attribute| attribute.contains("outline truncated")));
+        assert!(
+            objects[0]
+                .attributes
+                .iter()
+                .any(|attribute| attribute.contains("outline truncated"))
+        );
 
         let nested = format!("value = {}0{}", "[".repeat(40), "]".repeat(40));
         let objects = parse_toml_semantic_objects(Path::new("nested.toml"), &nested)
@@ -131,7 +196,10 @@ path = "content/sample-game"
     }
 
     fn semantic_object_count(objects: &[SemanticObject]) -> usize {
-        objects.iter().map(|object| 1 + semantic_object_count(&object.children)).sum()
+        objects
+            .iter()
+            .map(|object| 1 + semantic_object_count(&object.children))
+            .sum()
     }
 
     #[test]
@@ -142,10 +210,12 @@ path = "content/sample-game"
         let objects = parse_toml_semantic_objects(Path::new("dense.toml"), &source)
             .expect("valid dense TOML");
         assert!(objects.len() <= vapor_gui_core::semantic::MAX_SEMANTIC_OBJECTS);
-        assert!(objects[0]
-            .attributes
-            .iter()
-            .any(|attribute| attribute.contains("outline truncated")));
+        assert!(
+            objects[0]
+                .attributes
+                .iter()
+                .any(|attribute| attribute.contains("outline truncated"))
+        );
     }
 
     #[test]
@@ -183,9 +253,19 @@ pub fn parse_toml_semantic_objects(
     let mut objects = Vec::new();
     let mut entries = parsed.iter().peekable();
     while let Some((name, item)) = entries.next() {
-        let Some(key) = parsed.as_table().key(name) else { continue; };
+        let Some(key) = parsed.as_table().key(name) else {
+            continue;
+        };
         if let Some(object) = toml_item_semantic_object(
-            &domain, document, source, &[], key.get(), key.span(), item, 0, &mut budget,
+            &domain,
+            document,
+            source,
+            &[],
+            key.get(),
+            key.span(),
+            item,
+            0,
+            &mut budget,
         ) {
             objects.push(object);
         }
@@ -300,7 +380,10 @@ struct SemanticBudget {
 
 impl SemanticBudget {
     fn new() -> Self {
-        Self { remaining: vapor_gui_core::semantic::MAX_SEMANTIC_OBJECTS, truncated: false }
+        Self {
+            remaining: vapor_gui_core::semantic::MAX_SEMANTIC_OBJECTS,
+            truncated: false,
+        }
     }
 
     fn take(&mut self, depth: usize) -> bool {
@@ -313,7 +396,6 @@ impl SemanticBudget {
     }
 }
 
-
 fn toml_item_semantic_object(
     domain: &str,
     document: &Path,
@@ -325,59 +407,128 @@ fn toml_item_semantic_object(
     depth: usize,
     budget: &mut SemanticBudget,
 ) -> Option<SemanticObject> {
-    if !budget.take(depth) { return None; }
+    if !budget.take(depth) {
+        return None;
+    }
     let source_span = item.span().or(key_span.clone())?;
     let mut path = parent_path.to_vec();
     path.push(name.to_owned());
     let mut children = Vec::new();
     let kind = if let Some(table) = item.as_table() {
         for (name, child) in table.iter() {
-            if budget.remaining == 0 { budget.truncated = true; break; }
-            let Some(key) = table.key(name) else { continue; };
+            if budget.remaining == 0 {
+                budget.truncated = true;
+                break;
+            }
+            let Some(key) = table.key(name) else {
+                continue;
+            };
             if let Some(child) = toml_item_semantic_object(
-                domain, document, source, &path, key.get(), key.span(), child, depth + 1, budget,
-            ) { children.push(child); }
+                domain,
+                document,
+                source,
+                &path,
+                key.get(),
+                key.span(),
+                child,
+                depth + 1,
+                budget,
+            ) {
+                children.push(child);
+            }
         }
         SemanticObjectKind::Configuration
     } else if let Some(tables) = item.as_array_of_tables() {
         for (index, table) in tables.iter().enumerate() {
-            if !budget.take(depth + 1) { break; }
+            if !budget.take(depth + 1) {
+                break;
+            }
             let entry_name = format!("[{index}]");
             let mut entry_path = path.clone();
             entry_path.push(entry_name.clone());
-            let Some(span) = table.span() else { continue; };
+            let Some(span) = table.span() else {
+                continue;
+            };
             let mut members = Vec::new();
             for (name, child) in table.iter() {
-                if budget.remaining == 0 { budget.truncated = true; break; }
-                let Some(key) = table.key(name) else { continue; };
+                if budget.remaining == 0 {
+                    budget.truncated = true;
+                    break;
+                }
+                let Some(key) = table.key(name) else {
+                    continue;
+                };
                 if let Some(child) = toml_item_semantic_object(
-                    domain, document, source, &entry_path, key.get(), key.span(), child, depth + 2, budget,
-                ) { members.push(child); }
+                    domain,
+                    document,
+                    source,
+                    &entry_path,
+                    key.get(),
+                    key.span(),
+                    child,
+                    depth + 2,
+                    budget,
+                ) {
+                    members.push(child);
+                }
             }
             children.push(toml_semantic_node(
-                domain, document, source, entry_path, entry_name, span.clone(), span,
-                Some("table".to_owned()), SemanticObjectKind::Configuration, members,
+                domain,
+                document,
+                source,
+                entry_path,
+                entry_name,
+                span.clone(),
+                span,
+                Some("table".to_owned()),
+                SemanticObjectKind::Configuration,
+                members,
             ));
         }
         SemanticObjectKind::Configuration
     } else if let Some(value) = item.as_value() {
-        toml_value_semantic_children(domain, document, source, &path, value, &mut children, depth + 1, budget);
+        toml_value_semantic_children(
+            domain,
+            document,
+            source,
+            &path,
+            value,
+            &mut children,
+            depth + 1,
+            budget,
+        );
         toml_value_semantic_kind(value)
     } else {
         SemanticObjectKind::Other
     };
-    let detail = item.as_value().map(|value| {
-        if value.is_array() {
-            format!("array · {} items", value.as_array().map_or(0, |array| array.len()))
-        } else {
-            value.type_name().to_owned()
-        }
-    }).or_else(|| item.as_table().map(|_| "table".to_owned()))
-      .or_else(|| item.as_array_of_tables().map(|tables| format!("array of tables · {} entries", tables.len())));
+    let detail = item
+        .as_value()
+        .map(|value| {
+            if value.is_array() {
+                format!(
+                    "array · {} items",
+                    value.as_array().map_or(0, |array| array.len())
+                )
+            } else {
+                value.type_name().to_owned()
+            }
+        })
+        .or_else(|| item.as_table().map(|_| "table".to_owned()))
+        .or_else(|| {
+            item.as_array_of_tables()
+                .map(|tables| format!("array of tables · {} entries", tables.len()))
+        });
     Some(toml_semantic_node(
-        domain, document, source, path, name.to_owned(), source_span,
+        domain,
+        document,
+        source,
+        path,
+        name.to_owned(),
+        source_span,
         key_span.unwrap_or_else(|| item.span().unwrap_or_default()),
-        detail, kind, children,
+        detail,
+        kind,
+        children,
     ))
 }
 
@@ -393,24 +544,56 @@ fn toml_value_semantic_children(
 ) {
     if let Some(array) = value.as_array() {
         for (index, value) in array.iter().enumerate() {
-            if !budget.take(depth) { break; }
+            if !budget.take(depth) {
+                break;
+            }
             let name = format!("[{index}]");
-            let Some(span) = value.span() else { continue; };
+            let Some(span) = value.span() else {
+                continue;
+            };
             let mut path = parent_path.to_vec();
             path.push(name.clone());
             let mut nested = Vec::new();
-            toml_value_semantic_children(domain, document, source, &path, value, &mut nested, depth + 1, budget);
+            toml_value_semantic_children(
+                domain,
+                document,
+                source,
+                &path,
+                value,
+                &mut nested,
+                depth + 1,
+                budget,
+            );
             children.push(toml_semantic_node(
-                domain, document, source, path, name, span.clone(), span,
-                Some(value.type_name().to_owned()), toml_value_semantic_kind(value), nested,
+                domain,
+                document,
+                source,
+                path,
+                name,
+                span.clone(),
+                span,
+                Some(value.type_name().to_owned()),
+                toml_value_semantic_kind(value),
+                nested,
             ));
         }
     } else if let Some(table) = value.as_inline_table() {
         for (key_name, _) in table.iter() {
-            if budget.remaining == 0 { budget.truncated = true; break; }
+            if budget.remaining == 0 {
+                budget.truncated = true;
+                break;
+            }
             if let Some((key, item)) = table.get_key_value(key_name)
                 && let Some(object) = toml_item_semantic_object(
-                    domain, document, source, parent_path, key.get(), key.span(), item, depth, budget,
+                    domain,
+                    document,
+                    source,
+                    parent_path,
+                    key.get(),
+                    key.span(),
+                    item,
+                    depth,
+                    budget,
                 )
             {
                 children.push(object);
@@ -498,7 +681,10 @@ fn cargo_semantic_attribute(path: &[String]) -> Option<&'static str> {
         };
     }
     if path.iter().any(|segment| {
-        matches!(segment.as_str(), "dependencies" | "dev-dependencies" | "build-dependencies")
+        matches!(
+            segment.as_str(),
+            "dependencies" | "dev-dependencies" | "build-dependencies"
+        )
     }) {
         return match name {
             "version" => Some("Cargo dependency version"),
@@ -583,7 +769,10 @@ fn authored_vapor_semantic_attribute(path: &[String]) -> Option<&'static str> {
     let name = path.last()?.as_str();
     let is_content_reference_version = name == "version"
         && path[..path.len().saturating_sub(1)].iter().any(|segment| {
-            matches!(segment.as_str(), "engine" | "game" | "dependencies" | "extends")
+            matches!(
+                segment.as_str(),
+                "engine" | "game" | "dependencies" | "extends"
+            )
         });
     match name {
         "schema" => Some("Vapor manifest schema"),
@@ -598,10 +787,20 @@ fn authored_vapor_semantic_attribute(path: &[String]) -> Option<&'static str> {
         "id" if path.iter().any(|segment| {
             matches!(
                 segment.as_str(),
-                "engine" | "game" | "enginepack" | "gamepack" | "modpack"
-                    | "packagepack" | "engine-mod" | "game-mod" | "extension-mod"
+                "engine"
+                    | "game"
+                    | "enginepack"
+                    | "gamepack"
+                    | "modpack"
+                    | "packagepack"
+                    | "engine-mod"
+                    | "game-mod"
+                    | "extension-mod"
             )
-        }) => Some("Vapor content reference"),
+        }) =>
+        {
+            Some("Vapor content reference")
+        }
         _ => None,
     }
 }
@@ -634,7 +833,6 @@ pub(super) fn toml_parse_diagnostic(
         related: Vec::new(),
         // Keep the machine detail but avoid retaining a formatted TOML parser
         // error, which may quote source text such as credentials or tokens.
-
         raw_payload: message,
         context: vapor_gui_core::DiagnosticContext {
             domain: Some(toml_document_domain(path)),

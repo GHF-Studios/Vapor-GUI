@@ -44,7 +44,11 @@ pub(super) fn draw_file_tree(
                     view.enabled,
                     egui::Button::selectable(
                         view.selected == Some(path),
-                        format!("{}{}", file_display_label(path, view.files), if dirty { " *" } else { "" }),
+                        format!(
+                            "{}{}",
+                            file_display_label(path, view.files),
+                            if dirty { " *" } else { "" }
+                        ),
                     ),
                 );
                 if response.clicked() {
@@ -60,34 +64,52 @@ pub(super) fn reference_range(
     index: &SemanticWorkspaceIndex,
     reference: &SemanticObjectRef,
 ) -> Option<SemanticRange> {
-    index.resolve(reference).map(|object| object.selection_range)
+    index
+        .resolve(reference)
+        .map(|object| object.selection_range)
 }
 
 pub(super) fn file_display_label(path: &Path, all_files: &[PathBuf]) -> String {
     if path.extension().is_some_and(|extension| extension == "rs") {
         shortest_rust_label(path, all_files)
     } else {
-        path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned())
+        path.file_name().map_or_else(
+            || path.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        )
     }
 }
 
 pub(super) fn rust_label_parts(path: &Path) -> Vec<String> {
-    let Some(file_name) = path.file_name().map(|name| name.to_string_lossy().into_owned()) else {
+    let Some(file_name) = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+    else {
         return vec![path.display().to_string()];
     };
-    let mut directories = path.parent().into_iter().flat_map(Path::components).filter_map(|component| match component {
-        std::path::Component::Normal(name) => Some(name.to_string_lossy().into_owned()),
-        _ => None,
-    }).collect::<Vec<_>>();
+    let mut directories = path
+        .parent()
+        .into_iter()
+        .flat_map(Path::components)
+        .filter_map(|component| match component {
+            std::path::Component::Normal(name) => Some(name.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
     if let Some(src_index) = directories.iter().rposition(|part| part == "src") {
         directories = directories.split_off(src_index + 1);
     }
     if file_name == "mod.rs" {
-        if directories.is_empty() { vec!["crate".to_owned()] } else { directories }
+        if directories.is_empty() {
+            vec!["crate".to_owned()]
+        } else {
+            directories
+        }
     } else {
-        let stem = Path::new(&file_name)
-            .file_stem()
-            .map_or_else(|| file_name.clone(), |stem| stem.to_string_lossy().into_owned());
+        let stem = Path::new(&file_name).file_stem().map_or_else(
+            || file_name.clone(),
+            |stem| stem.to_string_lossy().into_owned(),
+        );
         directories.push(stem);
         directories
     }
@@ -144,10 +166,13 @@ pub(super) fn rust_crate_roots(files: &[PathBuf]) -> BTreeSet<PathBuf> {
         if let Some(root) = nearest_manifest
             && let Ok(relative) = source.strip_prefix(root)
         {
-            let first = relative.components().next().and_then(|component| match component {
-                std::path::Component::Normal(name) => name.to_str(),
-                _ => None,
-            });
+            let first = relative
+                .components()
+                .next()
+                .and_then(|component| match component {
+                    std::path::Component::Normal(name) => name.to_str(),
+                    _ => None,
+                });
             let cargo_source = matches!(first, Some("src" | "tests" | "benches" | "examples"))
                 || relative == Path::new("build.rs");
             if cargo_source {
@@ -176,29 +201,42 @@ pub(super) fn shortest_rust_label(path: &Path, candidates: &[PathBuf]) -> String
     let parts = rust_label_parts(path);
     for suffix_len in 1..=parts.len() {
         let suffix = parts[parts.len() - suffix_len..].join("/");
-        let ambiguous = candidates.iter().filter(|other| *other != path).any(|other| {
-            if other.extension().is_none_or(|extension| extension != "rs") { return false; }
-            let other_parts = rust_label_parts(other);
-            other_parts.len() >= suffix_len
-                && other_parts[other_parts.len() - suffix_len..].join("/") == suffix
-        });
-        if !ambiguous { return suffix; }
+        let ambiguous = candidates
+            .iter()
+            .filter(|other| *other != path)
+            .any(|other| {
+                if other.extension().is_none_or(|extension| extension != "rs") {
+                    return false;
+                }
+                let other_parts = rust_label_parts(other);
+                other_parts.len() >= suffix_len
+                    && other_parts[other_parts.len() - suffix_len..].join("/") == suffix
+            });
+        if !ambiguous {
+            return suffix;
+        }
     }
     let mut qualified = rust_crate_label(path).into_iter().collect::<Vec<_>>();
     qualified.extend(parts);
     let label = qualified.join("/");
-    let fallback_still_collides = candidates.iter().filter(|other| *other != path).any(|other| {
-        let mut other_qualified = rust_crate_label(other).into_iter().collect::<Vec<_>>();
-        other_qualified.extend(rust_label_parts(other));
-        other_qualified.join("/") == label
-    });
+    let fallback_still_collides = candidates
+        .iter()
+        .filter(|other| *other != path)
+        .any(|other| {
+            let mut other_qualified = rust_crate_label(other).into_iter().collect::<Vec<_>>();
+            other_qualified.extend(rust_label_parts(other));
+            other_qualified.join("/") == label
+        });
     if path.file_name().is_some_and(|name| name == "mod.rs") && fallback_still_collides {
         qualified.push("mod".to_owned());
     }
     qualified.join("/")
 }
 
-pub(super) fn document_tab_label(path: &Path, open_documents: &BTreeMap<PathBuf, Document>) -> String {
+pub(super) fn document_tab_label(
+    path: &Path,
+    open_documents: &BTreeMap<PathBuf, Document>,
+) -> String {
     if path.extension().is_some_and(|extension| extension == "rs") {
         return shortest_rust_label(path, &open_documents.keys().cloned().collect::<Vec<_>>());
     }

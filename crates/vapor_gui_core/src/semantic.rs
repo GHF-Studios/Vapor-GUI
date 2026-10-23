@@ -61,7 +61,14 @@ impl SemanticWorkspaceIndex {
         if truncated {
             mark_semantic_outline_truncated(&mut objects);
         }
-        self.documents.insert(path.clone(), SemanticDocument { path, version, objects });
+        self.documents.insert(
+            path.clone(),
+            SemanticDocument {
+                path,
+                version,
+                objects,
+            },
+        );
         true
     }
 
@@ -125,7 +132,10 @@ fn objects_belong_to_document(objects: &[SemanticObject], path: &Path) -> bool {
     true
 }
 
-fn find_object<'a>(objects: &'a [SemanticObject], id: &SemanticObjectId) -> Option<&'a SemanticObject> {
+fn find_object<'a>(
+    objects: &'a [SemanticObject],
+    id: &SemanticObjectId,
+) -> Option<&'a SemanticObject> {
     let mut pending = objects.iter().collect::<Vec<_>>();
     while let Some(object) = pending.pop() {
         if &object.id == id {
@@ -156,13 +166,24 @@ mod tests {
     #[test]
     fn semantic_index_round_trips_workspace_identity_and_source_revision() {
         let mut index = SemanticWorkspaceIndex::default();
-        index.replace_document("src/components.rs", 7, vec![object("src/components.rs", "Ship", None)]);
+        index.replace_document(
+            "src/components.rs",
+            7,
+            vec![object("src/components.rs", "Ship", None)],
+        );
 
         let encoded = serde_json::to_string(&index).expect("serialize semantic index");
-        let decoded: SemanticWorkspaceIndex = serde_json::from_str(&encoded).expect("deserialize semantic index");
+        let decoded: SemanticWorkspaceIndex =
+            serde_json::from_str(&encoded).expect("deserialize semantic index");
 
         assert_eq!(decoded, index);
-        assert_eq!(decoded.document(Path::new("src/components.rs")).unwrap().version, 7);
+        assert_eq!(
+            decoded
+                .document(Path::new("src/components.rs"))
+                .unwrap()
+                .version,
+            7
+        );
     }
 
     #[test]
@@ -179,7 +200,12 @@ mod tests {
         let toml = SemanticObjectId::new(
             "vapor-workspace",
             "Workspace.vapor.toml",
-            vec!["workspace".into(), "projects".into(), "[0]".into(), "path".into()],
+            vec![
+                "workspace".into(),
+                "projects".into(),
+                "[0]".into(),
+                "path".into(),
+            ],
         );
 
         assert_eq!(rust.qualified_name(), "game::Ship");
@@ -244,16 +270,19 @@ mod tests {
         assert!(index.replace_document("src/components.rs", 1, std::mem::take(&mut many)));
         let document = index.document(Path::new("src/components.rs")).unwrap();
         assert_eq!(document.objects.len(), MAX_SEMANTIC_OBJECTS);
-        assert!(document.objects[0].attributes.iter().any(|attribute| attribute.contains("truncated")));
+        assert!(
+            document.objects[0]
+                .attributes
+                .iter()
+                .any(|attribute| attribute.contains("truncated"))
+        );
 
         let mut nested = object("src/components.rs", "depth-0", None);
         let mut cursor = &mut nested;
         for depth in 1..=MAX_SEMANTIC_DEPTH + 2 {
-            cursor.children.push(object(
-                "src/components.rs",
-                &format!("depth-{depth}"),
-                None,
-            ));
+            cursor
+                .children
+                .push(object("src/components.rs", &format!("depth-{depth}"), None));
             cursor = cursor.children.last_mut().unwrap();
         }
         assert!(index.replace_document("src/components.rs", 2, vec![nested]));
@@ -265,18 +294,19 @@ mod tests {
             current = child;
         }
         assert!(depth <= MAX_SEMANTIC_DEPTH);
-        assert!(document.objects[0].attributes.iter().any(|attribute| attribute.contains("truncated")));
+        assert!(
+            document.objects[0]
+                .attributes
+                .iter()
+                .any(|attribute| attribute.contains("truncated"))
+        );
     }
 
     #[test]
     fn semantic_index_rejects_objects_anchored_to_another_document() {
         let mut index = SemanticWorkspaceIndex::default();
         let wrong_document = object("src/other.rs", "Ship", None);
-        assert!(!index.replace_document(
-            "src/components.rs",
-            1,
-            vec![wrong_document],
-        ));
+        assert!(!index.replace_document("src/components.rs", 1, vec![wrong_document],));
         assert!(index.document(Path::new("src/components.rs")).is_none());
     }
 
@@ -287,7 +317,10 @@ mod tests {
         let field_ref = field.reference(4);
         let mut index = SemanticWorkspaceIndex::default();
         index.replace_document("src/components.rs", 4, vec![component]);
-        assert_eq!(index.resolve(&field_ref).map(|item| item.name.as_str()), Some("velocity"));
+        assert_eq!(
+            index.resolve(&field_ref).map(|item| item.name.as_str()),
+            Some("velocity")
+        );
 
         index.replace_document("src/components.rs", 5, Vec::new());
         assert!(index.resolve(&field_ref).is_none());

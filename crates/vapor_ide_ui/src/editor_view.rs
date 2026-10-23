@@ -9,7 +9,11 @@ impl IdeApp {
             ui.horizontal_wrapped(|ui| {
                 for path in open_documents {
                     let label = document_tab_label(&path, &self.editor.documents);
-                    let dirty = self.editor.documents.get(&path).is_some_and(Document::is_dirty);
+                    let dirty = self
+                        .editor
+                        .documents
+                        .get(&path)
+                        .is_some_and(Document::is_dirty);
                     let selected = self.editor.selected_file.as_ref() == Some(&path);
                     if ui
                         .selectable_label(
@@ -21,7 +25,10 @@ impl IdeApp {
                         self.editor.selected_file = Some(path.clone());
                     }
                     if ui
-                        .add_enabled(!dirty && self.workspace.pending.is_none(), egui::Button::new("Close"))
+                        .add_enabled(
+                            !dirty && self.workspace.pending.is_none(),
+                            egui::Button::new("Close"),
+                        )
                         .on_hover_text(if dirty {
                             "Save this file before closing it."
                         } else {
@@ -52,14 +59,18 @@ impl IdeApp {
             ui.label("Opening file...");
             return;
         }
-        if self.editor.pending_navigation
+        if self
+            .editor
+            .pending_navigation
             .as_ref()
             .is_some_and(|(target, _, _)| target == &path)
             && let Some((_, line, character)) = self.editor.pending_navigation.take()
             && let Some(document) = self.editor.documents.get(&path)
         {
             if let Some(offset) = position_to_byte_offset(&document.contents, line, character) {
-                let semantic_range = self.semantic.selected
+                let semantic_range = self
+                    .semantic
+                    .selected
                     .as_ref()
                     .filter(|reference| reference.id.document == path)
                     .and_then(|reference| {
@@ -76,7 +87,8 @@ impl IdeApp {
                     semantic_range.unwrap_or(offset..offset),
                 );
             } else {
-                self.workspace.status = "The language server returned an invalid source position.".to_owned();
+                self.workspace.status =
+                    "The language server returned an invalid source position.".to_owned();
             }
         }
         let mut find_action = self.editor.find_navigation.take();
@@ -140,7 +152,9 @@ impl IdeApp {
             self.editor.find_match_index = None;
         }
         if let Some(previous) = find_action {
-            let source = self.editor.documents
+            let source = self
+                .editor
+                .documents
                 .get(&path)
                 .map(|document| document.contents.as_str())
                 .unwrap_or_default();
@@ -244,7 +258,8 @@ impl IdeApp {
         };
         if let Some(cursor) = cursor {
             self.editor.cursor_offset = cursor.primary.index.into();
-            self.editor.cursor_position = cursor_position(&document.contents, self.editor.cursor_offset);
+            self.editor.cursor_position =
+                cursor_position(&document.contents, self.editor.cursor_offset);
         }
         if let Some((contents, version)) = changed_document {
             self.language_server.completion_items.clear();

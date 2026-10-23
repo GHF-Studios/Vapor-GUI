@@ -100,7 +100,10 @@ pub(super) fn relative_workspace_path(root: &Path, path: &Path) -> Option<PathBu
     absolute.strip_prefix(root).ok().map(Path::to_path_buf)
 }
 
-pub(super) fn reference_locations(result: &serde_json::Value, root: &Path) -> (Vec<ReferenceLocation>, usize) {
+pub(super) fn reference_locations(
+    result: &serde_json::Value,
+    root: &Path,
+) -> (Vec<ReferenceLocation>, usize) {
     let Some(locations) = result.as_array() else {
         return (Vec::new(), 0);
     };
@@ -108,7 +111,11 @@ pub(super) fn reference_locations(result: &serde_json::Value, root: &Path) -> (V
     let mut references = Vec::with_capacity(locations.len().min(MAX_REFERENCE_LOCATIONS));
     let mut omitted = 0usize;
     for location in locations {
-        let Some(absolute_path) = location.get("uri").and_then(serde_json::Value::as_str).and_then(path_from_file_uri) else {
+        let Some(absolute_path) = location
+            .get("uri")
+            .and_then(serde_json::Value::as_str)
+            .and_then(path_from_file_uri)
+        else {
             continue;
         };
         let canonical_path = absolute_path.canonicalize().unwrap_or(absolute_path);
@@ -119,8 +126,14 @@ pub(super) fn reference_locations(result: &serde_json::Value, root: &Path) -> (V
             continue;
         };
         let (Some(line), Some(character)) = (
-            start.get("line").and_then(serde_json::Value::as_u64).and_then(|value| usize::try_from(value).ok()),
-            start.get("character").and_then(serde_json::Value::as_u64).and_then(|value| usize::try_from(value).ok()),
+            start
+                .get("line")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok()),
+            start
+                .get("character")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok()),
         ) else {
             continue;
         };
@@ -151,7 +164,11 @@ pub(super) fn lsp_position(source: &str, character_offset: usize) -> serde_json:
     serde_json::json!({"line": line, "character": character})
 }
 
-pub(super) fn position_to_byte_offset(source: &str, line: usize, character: usize) -> Option<usize> {
+pub(super) fn position_to_byte_offset(
+    source: &str,
+    line: usize,
+    character: usize,
+) -> Option<usize> {
     let mut line_start = 0;
     for (line_index, line_text) in source.split('\n').enumerate() {
         if line_index == line {
@@ -192,7 +209,10 @@ pub(super) fn semantic_object_byte_range(
     (start <= end).then_some(start..end)
 }
 
-pub(super) fn apply_text_edits(source: &str, edits: &[serde_json::Value]) -> Result<String, &'static str> {
+pub(super) fn apply_text_edits(
+    source: &str,
+    edits: &[serde_json::Value],
+) -> Result<String, &'static str> {
     let mut ranges = edits
         .iter()
         .map(|edit| {

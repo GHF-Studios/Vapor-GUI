@@ -12,7 +12,9 @@ impl IdeApp {
         let mut close_file = None;
         let mut find_requested = false;
         let mut find_next = None;
-        let dirty_count = self.editor.documents
+        let dirty_count = self
+            .editor
+            .documents
             .values()
             .filter(|document| document.is_dirty())
             .count();
@@ -38,12 +40,18 @@ impl IdeApp {
                     create_file = true;
                     ui.close();
                 }
-                let canonical_module_open = self.editor.selected_file.as_deref()
-                    .is_some_and(|path| canonical_rust_item_kind(path, &self.workspace.rust_crate_roots).is_some());
-                if ui.add_enabled(
-                    canonical_module_open && self.workspace.pending.is_none(),
-                    egui::Button::new("New Rust item…"),
-                ).on_disabled_hover_text("Open a canonical Rust module first.").clicked() {
+                let canonical_module_open =
+                    self.editor.selected_file.as_deref().is_some_and(|path| {
+                        canonical_rust_item_kind(path, &self.workspace.rust_crate_roots).is_some()
+                    });
+                if ui
+                    .add_enabled(
+                        canonical_module_open && self.workspace.pending.is_none(),
+                        egui::Button::new("New Rust item…"),
+                    )
+                    .on_disabled_hover_text("Open a canonical Rust module first.")
+                    .clicked()
+                {
                     create_rust_item = true;
                     ui.close();
                 }
@@ -81,7 +89,10 @@ impl IdeApp {
             });
             ui.menu_button("Edit", |ui| {
                 if ui
-                    .add_enabled(self.editor.selected_file.is_some(), egui::Button::new("Find…"))
+                    .add_enabled(
+                        self.editor.selected_file.is_some(),
+                        egui::Button::new("Find…"),
+                    )
                     .clicked()
                 {
                     find_requested = true;
@@ -109,7 +120,9 @@ impl IdeApp {
             ui.menu_button("Run", |ui| {
                 if ui
                     .add_enabled(
-                        self.workspace.root.is_some() && self.workspace.pending.is_none() && !has_unsaved_edits,
+                        self.workspace.root.is_some()
+                            && self.workspace.pending.is_none()
+                            && !has_unsaved_edits,
                         egui::Button::new("Run project"),
                     )
                     .clicked()
@@ -154,7 +167,9 @@ impl IdeApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .add_enabled(
-                        self.workspace.root.is_some() && self.workspace.pending.is_none() && !has_unsaved_edits,
+                        self.workspace.root.is_some()
+                            && self.workspace.pending.is_none()
+                            && !has_unsaved_edits,
                         egui::Button::new(egui::RichText::new("Run").strong()),
                     )
                     .on_disabled_hover_text(if self.workspace.pending.is_some() {
@@ -186,7 +201,10 @@ impl IdeApp {
                     }
                 }
                 if ui
-                    .add_enabled(self.workspace.pending.is_none(), egui::Button::new(project_action))
+                    .add_enabled(
+                        self.workspace.pending.is_none(),
+                        egui::Button::new(project_action),
+                    )
                     .clicked()
                 {
                     self.workspace.project_switcher_open = true;
@@ -308,7 +326,8 @@ impl IdeApp {
                 snapshot.error.clone(),
             )
         });
-        let can_switch = self.workspace.pending.is_none() && !self.editor.documents.values().any(Document::is_dirty);
+        let can_switch = self.workspace.pending.is_none()
+            && !self.editor.documents.values().any(Document::is_dirty);
         let mut window_open = true;
         let mut requested_workspace = None;
         egui::Window::new("Open a project")
@@ -422,21 +441,35 @@ impl IdeApp {
                 if self.semantic.explorer_symbols {
                     ui.weak(format!("{} open", self.semantic.index.documents().count()));
                 } else {
-                    ui.weak(format!("{} files", self.workspace.file_tree.matching_file_count("")));
+                    ui.weak(format!(
+                        "{} files",
+                        self.workspace.file_tree.matching_file_count("")
+                    ));
                 }
             });
         });
         ui.horizontal(|ui| {
-            if ui.selectable_label(!self.semantic.explorer_symbols, "Files").clicked() {
+            if ui
+                .selectable_label(!self.semantic.explorer_symbols, "Files")
+                .clicked()
+            {
                 self.semantic.explorer_symbols = false;
             }
-            if ui.selectable_label(self.semantic.explorer_symbols, "Structure").clicked() {
+            if ui
+                .selectable_label(self.semantic.explorer_symbols, "Structure")
+                .clicked()
+            {
                 self.semantic.explorer_symbols = true;
             }
         });
         let search = ui.add(
-            egui::TextEdit::singleline(&mut self.workspace.file_query)
-                .hint_text(if self.semantic.explorer_symbols { "Search Rust workspace + open-file structure" } else { "Filter files | Ctrl/Cmd+P" }),
+            egui::TextEdit::singleline(&mut self.workspace.file_query).hint_text(
+                if self.semantic.explorer_symbols {
+                    "Search Rust workspace + open-file structure"
+                } else {
+                    "Filter files | Ctrl/Cmd+P"
+                },
+            ),
         );
         if self.workspace.focus_file_query {
             search.request_focus();
@@ -447,7 +480,8 @@ impl IdeApp {
         }
         let filter = self.workspace.file_query.trim().to_lowercase();
         if self.semantic.explorer_symbols {
-            self.semantic.match_cache
+            self.semantic
+                .match_cache
                 .prepare(&self.semantic.index, &filter);
             let symbol_query = self.workspace.file_query.trim().to_owned();
             self.request_workspace_symbols(&symbol_query);
@@ -537,7 +571,9 @@ impl IdeApp {
                     self.semantic.rename_target = None;
                 }
                 self.semantic.selected = Some(reference.clone());
-                let position = reference_range(&self.semantic.index, &reference).unwrap_or_default().start;
+                let position = reference_range(&self.semantic.index, &reference)
+                    .unwrap_or_default()
+                    .start;
                 self.navigate_to_workspace_location(
                     &reference.id.document,
                     position.line as usize,

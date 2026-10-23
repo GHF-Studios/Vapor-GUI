@@ -9,7 +9,8 @@ impl IdeApp {
             return;
         }
         self.service.next_connect_attempt = Instant::now() + self.service.reconnect_delay;
-        self.service.reconnect_delay = (self.service.reconnect_delay * 2).min(Duration::from_secs(30));
+        self.service.reconnect_delay =
+            (self.service.reconnect_delay * 2).min(Duration::from_secs(30));
         let workspace = nonempty_path(&self.workspace.input);
         let (sender, receiver) = mpsc::channel();
         self.service.connecting = Some(receiver);
@@ -153,7 +154,9 @@ impl IdeApp {
         if self.workspace.pending.is_some() {
             return;
         }
-        self.editor.save_queue = self.editor.documents
+        self.editor.save_queue = self
+            .editor
+            .documents
             .iter()
             .filter(|(_, document)| document.is_dirty())
             .map(|(path, _)| path.clone())
@@ -170,7 +173,12 @@ impl IdeApp {
             return;
         }
         while let Some(path) = self.editor.save_queue.pop_front() {
-            if !self.editor.documents.get(&path).is_some_and(Document::is_dirty) {
+            if !self
+                .editor
+                .documents
+                .get(&path)
+                .is_some_and(Document::is_dirty)
+            {
                 continue;
             }
             self.save_path(path);
@@ -188,13 +196,23 @@ impl IdeApp {
     }
 
     pub(super) fn close_document(&mut self, path: &Path) {
-        if self.editor.documents.get(path).is_some_and(Document::is_dirty) {
+        if self
+            .editor
+            .documents
+            .get(path)
+            .is_some_and(Document::is_dirty)
+        {
             self.workspace.status = "Save this file before closing it.".to_owned();
             return;
         }
         self.did_close_document(path);
         self.semantic.index.invalidate_document(path);
-        if self.semantic.selected.as_ref().is_some_and(|selected| &selected.id.document == path) {
+        if self
+            .semantic
+            .selected
+            .as_ref()
+            .is_some_and(|selected| &selected.id.document == path)
+        {
             self.semantic.selected = None;
         }
         self.editor.documents.remove(path);
@@ -230,7 +248,8 @@ impl IdeApp {
             return;
         };
         if self.editor.documents.values().any(Document::is_dirty) {
-            self.workspace.status = "Save or discard your edits before running the project.".to_owned();
+            self.workspace.status =
+                "Save or discard your edits before running the project.".to_owned();
             return;
         }
         self.interface.console.history.clear();
@@ -258,7 +277,11 @@ impl IdeApp {
             };
             match frame {
                 ProtocolFrame::Response(response) => {
-                    if self.interface.console_requests.remove(&response.request_id.0) {
+                    if self
+                        .interface
+                        .console_requests
+                        .remove(&response.request_id.0)
+                    {
                         if let Some(error) = response.error {
                             self.interface.console.history.push(
                                 ConsoleRecord::new(
@@ -452,7 +475,8 @@ impl IdeApp {
                 self.workspace.files.sort();
                 self.workspace.file_tree = WorkspaceFileTree::new(&self.workspace.files);
                 self.workspace.rust_crate_roots = rust_crate_roots(&self.workspace.files);
-                self.workspace.status = format!("{} files in workspace.", self.workspace.files.len());
+                self.workspace.status =
+                    format!("{} files in workspace.", self.workspace.files.len());
                 self.workspace.pending = None;
             }
             WorkspaceFileResult::Opened {
@@ -472,7 +496,9 @@ impl IdeApp {
                         version: 1,
                     },
                 );
-                if let Some((version, contents)) = self.editor.documents
+                if let Some((version, contents)) = self
+                    .editor
+                    .documents
                     .get(&path)
                     .map(|document| (document.version as u64, document.contents.clone()))
                 {
@@ -490,7 +516,8 @@ impl IdeApp {
             } if self.pending_save_matches(&operation_id, &path) => {
                 let path = PathBuf::from(path);
                 let saved_contents =
-                    self.workspace.pending
+                    self.workspace
+                        .pending
                         .as_ref()
                         .and_then(|pending| match &pending.action {
                             PendingAction::SaveFile { contents, .. } => Some(contents.clone()),
@@ -528,7 +555,8 @@ impl IdeApp {
     }
 
     pub(super) fn pending_matches(&self, operation_id: &str) -> bool {
-        self.workspace.pending
+        self.workspace
+            .pending
             .as_ref()
             .is_some_and(|pending| pending.operation_id.as_deref() == Some(operation_id))
     }
@@ -541,7 +569,9 @@ impl IdeApp {
     }
 }
 
-pub(super) fn connect_service(workspace: Option<PathBuf>) -> Result<Client, vapor_client::ClientError> {
+pub(super) fn connect_service(
+    workspace: Option<PathBuf>,
+) -> Result<Client, vapor_client::ClientError> {
     let application_executable = std::env::current_exe()
         .map_err(|error| vapor_client::ClientError::Io(error.to_string()))?;
     let service_path = service_sibling_path(&application_executable);

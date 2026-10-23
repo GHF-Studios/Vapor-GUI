@@ -52,7 +52,10 @@ pub fn parse_rhai_semantic_objects(document: &Path, source: &str) -> Vec<Semanti
             index += 1;
             continue;
         };
-        if tokens.get(close_paren_index + 1).is_some_and(|token| token.text != "{") {
+        if tokens
+            .get(close_paren_index + 1)
+            .is_some_and(|token| token.text != "{")
+        {
             index = close_paren_index + 1;
             continue;
         }
@@ -95,7 +98,8 @@ pub fn parse_rhai_semantic_objects(document: &Path, source: &str) -> Vec<Semanti
             attributes: vec!["Rhai function".to_owned()],
             children,
         });
-        function_token_ranges.push(index..body_close.map_or(close_paren_index + 1, |close| close + 1));
+        function_token_ranges
+            .push(index..body_close.map_or(close_paren_index + 1, |close| close + 1));
         index = body_close.map_or(close_paren_index + 1, |close| close + 1);
     }
 
@@ -148,9 +152,10 @@ pub fn parse_rhai_semantic_objects(document: &Path, source: &str) -> Vec<Semanti
     vec![SemanticObject {
         id: SemanticObjectId::new("rhai", document, vec!["script".to_owned()]),
         kind: SemanticObjectKind::Script,
-        name: document
-            .file_name()
-            .map_or_else(|| "Script".to_owned(), |name| name.to_string_lossy().into_owned()),
+        name: document.file_name().map_or_else(
+            || "Script".to_owned(),
+            |name| name.to_string_lossy().into_owned(),
+        ),
         detail: Some(format!("{} declarations", declarations.len())),
         range: semantic_range_from_byte_span(source, 0..source.len()),
         selection_range: semantic_range_from_byte_span(source, 0..source.len().min(1)),
@@ -226,7 +231,10 @@ pub fn rhai_structure_diagnostics(document: &Path, source: &str) -> Vec<Structur
             break;
         }
     }
-    for (_, token) in open.into_iter().take(64usize.saturating_sub(diagnostics.len())) {
+    for (_, token) in open
+        .into_iter()
+        .take(64usize.saturating_sub(diagnostics.len()))
+    {
         diagnostics.push(structure_diagnostic(
             document,
             source,
@@ -399,7 +407,10 @@ fn lex_declarations(source: &str) -> LexedTokens {
     let mut cursor = 0;
     while cursor < source.len() {
         if tokens.len() >= MAX_RHAI_TOKENS {
-            return LexedTokens { tokens, truncated: true };
+            return LexedTokens {
+                tokens,
+                truncated: true,
+            };
         }
         let Some(character) = source[cursor..].chars().next() else {
             break;
@@ -410,9 +421,7 @@ fn lex_declarations(source: &str) -> LexedTokens {
             continue;
         }
         if source[cursor..].starts_with("//") {
-            cursor += source[cursor..]
-                .find('\n')
-                .unwrap_or(source.len() - cursor);
+            cursor += source[cursor..].find('\n').unwrap_or(source.len() - cursor);
             continue;
         }
         if source[cursor..].starts_with("/*") {
@@ -476,7 +485,10 @@ fn lex_declarations(source: &str) -> LexedTokens {
             range: start..cursor,
         });
     }
-    LexedTokens { tokens, truncated: false }
+    LexedTokens {
+        tokens,
+        truncated: false,
+    }
 }
 
 fn truncate_semantic_objects(
@@ -486,7 +498,9 @@ fn truncate_semantic_objects(
     truncated: &mut bool,
 ) {
     if depth >= crate::semantic::MAX_SEMANTIC_DEPTH {
-        if !objects.is_empty() { *truncated = true; }
+        if !objects.is_empty() {
+            *truncated = true;
+        }
         objects.clear();
         return;
     }
@@ -517,16 +531,35 @@ mod tests {
         assert_eq!(function.kind, SemanticObjectKind::Function);
         assert_eq!(function.name, "launch");
         assert_eq!(function.detail.as_deref(), Some("fn launch(target,speed)"));
-        assert!(function.children.iter().any(|child| child.name == "target" && child.kind == SemanticObjectKind::Parameter));
-        assert!(function.children.iter().any(|child| child.name == "thrust" && child.kind == SemanticObjectKind::Field));
-        assert!(function.children.iter().any(|child| child.name == "label" && child.kind == SemanticObjectKind::Constant));
+        assert!(
+            function
+                .children
+                .iter()
+                .any(|child| child.name == "target" && child.kind == SemanticObjectKind::Parameter)
+        );
+        assert!(
+            function
+                .children
+                .iter()
+                .any(|child| child.name == "thrust" && child.kind == SemanticObjectKind::Field)
+        );
+        assert!(
+            function
+                .children
+                .iter()
+                .any(|child| child.name == "label" && child.kind == SemanticObjectKind::Constant)
+        );
     }
 
     #[test]
     fn comments_and_string_literals_do_not_create_false_rhai_declarations() {
         let source = "// fn fake() {}\nlet note = \"fn also_fake() {}\"; /* const hidden = 1; */ fn real() {}";
         let objects = parse_rhai_semantic_objects(Path::new("scripts/main.rhai"), source);
-        let names = objects[0].children.iter().map(|object| object.name.as_str()).collect::<Vec<_>>();
+        let names = objects[0]
+            .children
+            .iter()
+            .map(|object| object.name.as_str())
+            .collect::<Vec<_>>();
         assert_eq!(names, ["note", "real"]);
     }
 
@@ -534,7 +567,11 @@ mod tests {
     fn method_calls_named_fn_are_not_classified_as_function_declarations() {
         let source = "let value = target.fn(speed); fn real() {}";
         let objects = parse_rhai_semantic_objects(Path::new("scripts/main.rhai"), source);
-        let names = objects[0].children.iter().map(|object| object.name.as_str()).collect::<Vec<_>>();
+        let names = objects[0]
+            .children
+            .iter()
+            .map(|object| object.name.as_str())
+            .collect::<Vec<_>>();
         assert_eq!(names, ["value", "real"]);
     }
 
@@ -548,10 +585,17 @@ mod tests {
 
     #[test]
     fn dense_rhai_outline_is_bounded_and_announces_partial_indexing() {
-        let source = (0..5_000).map(|index| format!("let value_{index} = {index};\n")).collect::<String>();
+        let source = (0..5_000)
+            .map(|index| format!("let value_{index} = {index};\n"))
+            .collect::<String>();
         let objects = parse_rhai_semantic_objects(Path::new("dense.rhai"), &source);
         assert!(semantic_object_count(&objects) <= crate::semantic::MAX_SEMANTIC_OBJECTS);
-        assert!(objects[0].attributes.iter().any(|attribute| attribute.contains("outline truncated")));
+        assert!(
+            objects[0]
+                .attributes
+                .iter()
+                .any(|attribute| attribute.contains("outline truncated"))
+        );
     }
 
     #[test]
@@ -571,11 +615,17 @@ mod tests {
         let source = "(".repeat(super::MAX_RHAI_TOKENS + 1);
         let diagnostics = super::rhai_structure_diagnostics(Path::new("large.rhai"), &source);
         assert_eq!(diagnostics.len(), 1);
-        assert_eq!(diagnostics[0].code.as_deref(), Some("vapor.semantic.token-limit"));
+        assert_eq!(
+            diagnostics[0].code.as_deref(),
+            Some("vapor.semantic.token-limit")
+        );
     }
 
     fn semantic_object_count(objects: &[SemanticObject]) -> usize {
-        objects.iter().map(|object| 1 + semantic_object_count(&object.children)).sum()
+        objects
+            .iter()
+            .map(|object| 1 + semantic_object_count(&object.children))
+            .sum()
     }
 
     #[test]
@@ -588,10 +638,26 @@ mod tests {
     fn structural_diagnostics_point_to_unclosed_and_unexpected_delimiters() {
         let source = "fn launch() { let speed = (1; ]";
         let diagnostics = super::rhai_structure_diagnostics(Path::new("main.rhai"), source);
-        assert!(diagnostics.iter().any(|diagnostic| diagnostic.message == "Mismatched delimiter: ']' closes '('"));
-        assert!(diagnostics.iter().any(|diagnostic| diagnostic.message == "Unclosed '(' delimiter"));
-        assert!(diagnostics.iter().any(|diagnostic| diagnostic.message == "Unclosed '{' delimiter"));
-        assert!(diagnostics.iter().all(|diagnostic| diagnostic.raw_payload == diagnostic.message));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message == "Mismatched delimiter: ']' closes '('")
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message == "Unclosed '(' delimiter")
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message == "Unclosed '{' delimiter")
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.raw_payload == diagnostic.message)
+        );
     }
 
     #[test]

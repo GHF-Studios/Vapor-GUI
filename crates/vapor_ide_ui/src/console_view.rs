@@ -41,8 +41,11 @@ impl IdeApp {
                 .id_salt("ide-diagnostics")
                 .auto_shrink([false, false])
                 .show_rows(ui, row_height, diagnostic_count, |ui, visible_rows| {
-                    for ProblemRowRef { path, action, diagnostic } in
-                        self.semantic.problems.rows_in_range(visible_rows)
+                    for ProblemRowRef {
+                        path,
+                        action,
+                        diagnostic,
+                    } in self.semantic.problems.rows_in_range(visible_rows)
                     {
                         let marker = match diagnostic.severity {
                             vapor_gui_core::DiagnosticSeverity::Error => "Error",
@@ -59,34 +62,46 @@ impl IdeApp {
                             let span = navigation_span?;
                             workspace_diagnostic_path(root, &span.file, &self.workspace.files)
                         });
-                        let code = diagnostic.code.as_deref().map_or(String::new(), |code| format!(" [{code}]"));
+                        let code = diagnostic
+                            .code
+                            .as_deref()
+                            .map_or(String::new(), |code| format!(" [{code}]"));
                         let origin = diagnostic_origin_label(diagnostic.origin);
                         let action = action
                             .filter(|action| !action.is_empty())
                             .map_or_else(String::new, |action| format!(" · {action}"));
                         let location = match (path, navigation_span) {
                             (Some(path), Some(span)) => format!(
-                                "{}:{}:{}", path.display(), span.start_line, span.start_column
+                                "{}:{}:{}",
+                                path.display(),
+                                span.start_line,
+                                span.start_column
                             ),
                             (Some(path), None) => path.display().to_string(),
-                            (None, Some(span)) => format!(
-                                "{}:{}:{}", span.file, span.start_line, span.start_column
-                            ),
+                            (None, Some(span)) => {
+                                format!("{}:{}:{}", span.file, span.start_line, span.start_column)
+                            }
                             (None, None) => "workspace".to_owned(),
                         };
-                        let has_quick_fix = diagnostic.origin == vapor_gui_core::DiagnosticOrigin::RustAnalyzer
+                        let has_quick_fix = diagnostic.origin
+                            == vapor_gui_core::DiagnosticOrigin::RustAnalyzer
                             && path.is_some_and(|path| {
                                 path.extension().is_some_and(|extension| extension == "rs")
                                     && self.editor.documents.contains_key(path)
                             });
                         ui.horizontal(|ui| {
                             let action_width = if has_quick_fix { 82.0 } else { 0.0 };
-                            let label_width = (ui.available_width() - action_width - ui.spacing().item_spacing.x).max(1.0);
+                            let label_width =
+                                (ui.available_width() - action_width - ui.spacing().item_spacing.x)
+                                    .max(1.0);
                             let response = ui.add_sized(
                                 [label_width, row_height],
                                 egui::Button::selectable(
                                     false,
-                                    format!("{marker} · {origin}{action}{code}  {location}  {}", diagnostic.message),
+                                    format!(
+                                        "{marker} · {origin}{action}{code}  {location}  {}",
+                                        diagnostic.message
+                                    ),
                                 )
                                 .truncate(),
                             );
@@ -100,7 +115,12 @@ impl IdeApp {
                             }
                             if has_quick_fix
                                 && let Some(path) = path
-                                && ui.add_sized([action_width, row_height], egui::Button::new("Quick fix")).clicked()
+                                && ui
+                                    .add_sized(
+                                        [action_width, row_height],
+                                        egui::Button::new("Quick fix"),
+                                    )
+                                    .clicked()
                             {
                                 quick_fix_request = Some((path.clone(), diagnostic.clone()));
                             }
@@ -186,4 +206,3 @@ impl IdeApp {
         }
     }
 }
-

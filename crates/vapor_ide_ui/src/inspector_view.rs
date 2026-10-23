@@ -10,7 +10,11 @@ impl IdeApp {
             ui.strong(object.kind.label());
             ui.heading(&object.name);
             ui.monospace(object.id.qualified_name());
-            ui.weak(format!("{} · document revision {}", object.id.document.display(), reference.document_version));
+            ui.weak(format!(
+                "{} · document revision {}",
+                object.id.document.display(),
+                reference.document_version
+            ));
             if let Some(detail) = &object.detail {
                 ui.add_space(6.0);
                 ui.label(detail);
@@ -19,19 +23,33 @@ impl IdeApp {
                 ui.colored_label(egui::Color32::LIGHT_BLUE, status);
             }
             let mut diagnostic_navigation = None;
-            if let Some(relative_path) = self.workspace.root.as_deref().and_then(|root| {
-                relative_workspace_path(root, &object.id.document)
-            }) {
-                let diagnostics = self.semantic.problems.for_semantic_range(&relative_path, object.range);
+            if let Some(relative_path) = self
+                .workspace
+                .root
+                .as_deref()
+                .and_then(|root| relative_workspace_path(root, &object.id.document))
+            {
+                let diagnostics = self
+                    .semantic
+                    .problems
+                    .for_semantic_range(&relative_path, object.range);
                 if !diagnostics.is_empty() {
                     ui.add_space(8.0);
                     ui.strong(format!("Problems · {}", diagnostics.len()));
                     for diagnostic in diagnostics {
                         let severity = match diagnostic.severity {
-                            vapor_gui_core::DiagnosticSeverity::Error => ("Error", egui::Color32::LIGHT_RED),
-                            vapor_gui_core::DiagnosticSeverity::Warning => ("Warning", egui::Color32::YELLOW),
-                            vapor_gui_core::DiagnosticSeverity::Information => ("Info", egui::Color32::LIGHT_BLUE),
-                            vapor_gui_core::DiagnosticSeverity::Hint => ("Hint", egui::Color32::GRAY),
+                            vapor_gui_core::DiagnosticSeverity::Error => {
+                                ("Error", egui::Color32::LIGHT_RED)
+                            }
+                            vapor_gui_core::DiagnosticSeverity::Warning => {
+                                ("Warning", egui::Color32::YELLOW)
+                            }
+                            vapor_gui_core::DiagnosticSeverity::Information => {
+                                ("Info", egui::Color32::LIGHT_BLUE)
+                            }
+                            vapor_gui_core::DiagnosticSeverity::Hint => {
+                                ("Hint", egui::Color32::GRAY)
+                            }
                         };
                         ui.horizontal_wrapped(|ui| {
                             ui.colored_label(severity.1, severity.0);
@@ -76,7 +94,11 @@ impl IdeApp {
             ui.horizontal(|ui| {
                 let can_rename = self.language_server.ready
                     && object.id.domain == "rust"
-                    && object.id.document.extension().is_some_and(|extension| extension == "rs");
+                    && object
+                        .id
+                        .document
+                        .extension()
+                        .is_some_and(|extension| extension == "rs");
                 if ui
                     .add_enabled(can_rename, egui::Button::new("Rename…"))
                     .on_hover_text("Preview a Rust Analyzer rename across open workspace files")
@@ -94,7 +116,11 @@ impl IdeApp {
                 }
                 let can_query_references = self.language_server.ready
                     && self.editor.documents.contains_key(&object.id.document)
-                    && object.id.document.extension().is_some_and(|extension| extension == "rs");
+                    && object
+                        .id
+                        .document
+                        .extension()
+                        .is_some_and(|extension| extension == "rs");
                 if ui
                     .add_enabled(can_query_references, egui::Button::new("Find references"))
                     .on_hover_text("Find references to this declaration")
@@ -164,7 +190,10 @@ impl IdeApp {
             ui.label("Language tooling");
             ui.label(&self.language_server.status);
             ui.label("Rust Analyzer runs through the shared Vapor service and pinned toolchain.");
-            ui.label(format!("{} workspace problems", self.semantic.problems.count()));
+            ui.label(format!(
+                "{} workspace problems",
+                self.semantic.problems.count()
+            ));
             if let Some(hover) = &self.language_server.hover {
                 ui.add_space(8.0);
                 ui.label("Hover");
@@ -175,7 +204,11 @@ impl IdeApp {
                 ui.label(if self.language_server.references_omitted == 0 {
                     format!("References | {}", self.language_server.references.len())
                 } else {
-                    format!("References | {} shown · {} omitted", self.language_server.references.len(), self.language_server.references_omitted)
+                    format!(
+                        "References | {} shown · {} omitted",
+                        self.language_server.references.len(),
+                        self.language_server.references_omitted
+                    )
                 });
                 let mut selected_reference = None;
                 egui::ScrollArea::vertical()

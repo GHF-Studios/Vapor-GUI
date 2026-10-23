@@ -39,9 +39,10 @@ impl SemanticMatchCache {
         self.documents
             .retain(|path, _| index.document(path).is_some());
         for document in index.documents() {
-            let cache_is_current = self.documents.get(&document.path).is_some_and(|cached| {
-                cached.version == document.version && cached.query == query
-            });
+            let cache_is_current = self
+                .documents
+                .get(&document.path)
+                .is_some_and(|cached| cached.version == document.version && cached.query == query);
             if !cache_is_current {
                 self.documents.insert(
                     document.path.clone(),
@@ -120,7 +121,10 @@ impl Default for SemanticRenderBudget {
 
 impl SemanticRenderBudget {
     fn with_limit(limit: usize) -> Self {
-        Self { remaining: limit, truncated: false }
+        Self {
+            remaining: limit,
+            truncated: false,
+        }
     }
 
     fn take(&mut self) -> bool {
@@ -142,16 +146,23 @@ pub(super) fn has_semantic_outline(objects: &[SemanticObject]) -> bool {
     !objects.is_empty()
 }
 
-pub(super) fn semantic_explorer_guidance(open_documents: usize, language_server_ready: bool) -> String {
+pub(super) fn semantic_explorer_guidance(
+    open_documents: usize,
+    language_server_ready: bool,
+) -> String {
     let indexed = match open_documents {
         0 => "Open a supported file to see its semantic outline.".to_owned(),
         1 => "1 open document has a semantic outline.".to_owned(),
         count => format!("{count} open documents have semantic outlines."),
     };
     if language_server_ready {
-        format!("{indexed} Search also finds workspace-wide Rust declarations; open-file outlines cover the other supported formats.")
+        format!(
+            "{indexed} Search also finds workspace-wide Rust declarations; open-file outlines cover the other supported formats."
+        )
     } else {
-        format!("{indexed} Rust Analyzer is not connected, so workspace-wide Rust search is unavailable.")
+        format!(
+            "{indexed} Rust Analyzer is not connected, so workspace-wide Rust search is unavailable."
+        )
     }
 }
 
@@ -209,7 +220,15 @@ fn draw_semantic_object(
         .default_open(!matches.query_is_empty)
         .show(ui, |ui| {
             for child in &object.children {
-                draw_semantic_object(ui, child, matches, document_version, selected, requested, budget);
+                draw_semantic_object(
+                    ui,
+                    child,
+                    matches,
+                    document_version,
+                    selected,
+                    requested,
+                    budget,
+                );
             }
         });
     if matches.directly_matches(&object.id) && response.header_response.clicked() {
@@ -227,7 +246,10 @@ fn semantic_object_matches_lowered(object: &SemanticObject, filter: &str) -> boo
         || contains_case_insensitive(&object.id.qualified_name(), filter)
         || contains_case_insensitive(&object.id.document.to_string_lossy(), filter)
         || contains_case_insensitive(object.kind.label(), filter)
-        || object.detail.as_deref().is_some_and(|detail| contains_case_insensitive(detail, filter))
+        || object
+            .detail
+            .as_deref()
+            .is_some_and(|detail| contains_case_insensitive(detail, filter))
         || object
             .attributes
             .iter()
@@ -318,13 +340,11 @@ pub(super) fn semantic_convention_status(object: &SemanticObject) -> Option<Stri
 #[cfg(test)]
 mod tests {
     use super::{
-        SemanticFilterMatches, SemanticMatchCache, SemanticRenderBudget,
-        semantic_explorer_guidance,
+        SemanticFilterMatches, SemanticMatchCache, SemanticRenderBudget, semantic_explorer_guidance,
     };
     use std::path::Path;
     use vapor_gui_core::semantic::{
-        SemanticObject, SemanticObjectId, SemanticObjectKind, SemanticRange,
-        SemanticWorkspaceIndex,
+        SemanticObject, SemanticObjectId, SemanticObjectKind, SemanticRange, SemanticWorkspaceIndex,
     };
 
     fn object(name: &str, children: Vec<SemanticObject>) -> SemanticObject {
@@ -360,7 +380,10 @@ mod tests {
     fn semantic_filter_indexes_matching_nodes_and_only_their_ancestor_path() {
         let matching_field = object("velocity", Vec::new());
         let unrelated_field = object("health", Vec::new());
-        let ship = object("Ship", vec![matching_field.clone(), unrelated_field.clone()]);
+        let ship = object(
+            "Ship",
+            vec![matching_field.clone(), unrelated_field.clone()],
+        );
         let other = object("Station", Vec::new());
 
         let matches = SemanticFilterMatches::build(&[ship.clone(), other.clone()], "VELO");
@@ -387,9 +410,16 @@ mod tests {
         assert_eq!(cache.build_count, 1);
         cache.prepare(&index, "velocity");
         assert_eq!(cache.build_count, 1);
-        assert!(cache.get(Path::new("src/components.rs")).unwrap().is_visible(
-            &SemanticObjectId::new("rust", "src/components.rs", vec!["Ship".to_owned()])
-        ));
+        assert!(
+            cache
+                .get(Path::new("src/components.rs"))
+                .unwrap()
+                .is_visible(&SemanticObjectId::new(
+                    "rust",
+                    "src/components.rs",
+                    vec!["Ship".to_owned()]
+                ))
+        );
 
         index.replace_document(
             "src/components.rs",
@@ -398,9 +428,16 @@ mod tests {
         );
         cache.prepare(&index, "velocity");
         assert_eq!(cache.build_count, 2);
-        assert!(!cache.get(Path::new("src/components.rs")).unwrap().is_visible(
-            &SemanticObjectId::new("rust", "src/components.rs", vec!["Ship".to_owned()])
-        ));
+        assert!(
+            !cache
+                .get(Path::new("src/components.rs"))
+                .unwrap()
+                .is_visible(&SemanticObjectId::new(
+                    "rust",
+                    "src/components.rs",
+                    vec!["Ship".to_owned()]
+                ))
+        );
 
         index.invalidate_document(Path::new("src/components.rs"));
         cache.prepare(&index, "velocity");
@@ -423,7 +460,9 @@ mod tests {
     }
 
     fn semantic_object() -> vapor_gui_core::semantic::SemanticObject {
-        use vapor_gui_core::semantic::{SemanticObject, SemanticObjectId, SemanticObjectKind, SemanticRange};
+        use vapor_gui_core::semantic::{
+            SemanticObject, SemanticObjectId, SemanticObjectKind, SemanticRange,
+        };
         SemanticObject {
             id: SemanticObjectId::new("toml", "Cargo.toml", vec!["package".to_owned()]),
             kind: SemanticObjectKind::Configuration,

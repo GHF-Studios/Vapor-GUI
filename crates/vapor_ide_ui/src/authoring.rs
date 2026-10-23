@@ -13,7 +13,8 @@ pub(super) struct WorkspaceAuthoring {
 impl IdeApp {
     pub(super) fn create_semantic_rust_item(&mut self) {
         let Some(path) = self.editor.selected_file.clone() else {
-            self.workspace.status = "Open a canonical Rust module before creating an item.".to_owned();
+            self.workspace.status =
+                "Open a canonical Rust module before creating an item.".to_owned();
             return;
         };
         if canonical_rust_item_kind(&path, &self.workspace.rust_crate_roots).is_none() {
@@ -21,7 +22,8 @@ impl IdeApp {
             return;
         }
         let Some(document) = self.editor.documents.get(&path) else {
-            self.workspace.status = "Open a canonical Rust module before creating an item.".to_owned();
+            self.workspace.status =
+                "Open a canonical Rust module before creating an item.".to_owned();
             return;
         };
         let updated = match rust_semantics::render_canonical_rust_item(
@@ -39,7 +41,8 @@ impl IdeApp {
             return;
         };
         let Some(version) = document.version.checked_add(1) else {
-            self.workspace.status = "This file has reached the editor revision limit; close and reopen it.".to_owned();
+            self.workspace.status =
+                "This file has reached the editor revision limit; close and reopen it.".to_owned();
             return;
         };
         document.contents = updated.clone();
@@ -47,16 +50,19 @@ impl IdeApp {
         self.did_change_document(&path, updated, version);
         self.interface.authoring.new_rust_item_dialog = false;
         self.interface.authoring.new_rust_item_name.clear();
-        self.workspace.status = "Rust item added to the open file. Save to write it to disk.".to_owned();
+        self.workspace.status =
+            "Rust item added to the open file. Save to write it to disk.".to_owned();
     }
 
     pub(super) fn open_semantic_rust_item_dialog(&mut self) {
         let Some(path) = self.editor.selected_file.as_deref() else {
-            self.workspace.status = "Open a canonical Rust module before creating an item.".to_owned();
+            self.workspace.status =
+                "Open a canonical Rust module before creating an item.".to_owned();
             return;
         };
         let Some(kind) = canonical_rust_item_kind(path, &self.workspace.rust_crate_roots) else {
-            self.workspace.status = "Open a canonical Rust module before creating an item.".to_owned();
+            self.workspace.status =
+                "Open a canonical Rust module before creating an item.".to_owned();
             return;
         };
         self.interface.authoring.new_rust_item_name = kind.default_name().to_owned();
@@ -93,15 +99,18 @@ impl IdeApp {
                 .open(&mut open)
                 .show(context, |ui| {
                     if let Some(path) = self.editor.selected_file.as_ref()
-                        && let Some(kind) = canonical_rust_item_kind(path, &self.workspace.rust_crate_roots)
+                        && let Some(kind) =
+                            canonical_rust_item_kind(path, &self.workspace.rust_crate_roots)
                     {
                         ui.strong(format!("{} in {}", kind.label(), path.display()));
                     }
                     ui.label("The template edits this open buffer. Save writes it to disk.");
                     ui.add(
-                        egui::TextEdit::singleline(&mut self.interface.authoring.new_rust_item_name)
-                            .hint_text("Rust identifier")
-                            .desired_width(340.0),
+                        egui::TextEdit::singleline(
+                            &mut self.interface.authoring.new_rust_item_name,
+                        )
+                        .hint_text("Rust identifier")
+                        .desired_width(340.0),
                     );
                     ui.horizontal(|ui| {
                         if ui.button("Insert into file").clicked() {

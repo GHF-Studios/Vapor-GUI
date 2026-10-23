@@ -1,29 +1,23 @@
-use super::{
-    Document, EditPreviewApplyError, ProblemRow, ProblemStore, ReferenceLocation, VersionedEditPreview,
-    apply_text_edits, apply_versioned_edit, completion_items,
-    operation_produces_build_diagnostics, reference_request_matches_selection,
-    pending_lsp_requests_for_cancellation,
-    pending_request_snapshot_is_current,
-    workspace_versions_match,
-    semantic_source_limit_diagnostic,
-    workspace_diagnostic_path,
-    canonical_rust_item_kind,
-    cursor_position, document_tab_label, file_display_label, file_uri, find_matches, hover_text,
-    identifier_byte_range, lsp_position, nonempty_path,
-    path_from_file_uri, position_to_byte_offset, reference_locations,
-    relative_workspace_path, rust_analyzer_client_capabilities,
-    rust_analyzer_initialization_options, rust_label_parts,
-    rust_crate_roots,
-    shortest_rust_label, toml_parse_diagnostic, workspace_tree_ordering,
-    semantic_object_byte_range,
-};
 use super::rust_semantics::{
-    CanonicalRustItemKind, parse_semantic_symbols, render_canonical_rust_item,
-    rust_lsp_symbol_kind,
+    CanonicalRustItemKind, parse_semantic_symbols, render_canonical_rust_item, rust_lsp_symbol_kind,
 };
-use vapor_gui_core::semantic::SemanticObjectKind;
+use super::{
+    Document, EditPreviewApplyError, ProblemRow, ProblemStore, ReferenceLocation,
+    VersionedEditPreview, apply_text_edits, apply_versioned_edit, canonical_rust_item_kind,
+    completion_items, cursor_position, document_tab_label, file_display_label, file_uri,
+    find_matches, hover_text, identifier_byte_range, lsp_position, nonempty_path,
+    operation_produces_build_diagnostics, path_from_file_uri,
+    pending_lsp_requests_for_cancellation, pending_request_snapshot_is_current,
+    position_to_byte_offset, reference_locations, reference_request_matches_selection,
+    relative_workspace_path, rust_analyzer_client_capabilities,
+    rust_analyzer_initialization_options, rust_crate_roots, rust_label_parts,
+    semantic_object_byte_range, semantic_source_limit_diagnostic, shortest_rust_label,
+    toml_parse_diagnostic, workspace_diagnostic_path, workspace_tree_ordering,
+    workspace_versions_match,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use vapor_gui_core::semantic::SemanticObjectKind;
 
 #[test]
 fn cargo_diagnostics_map_to_workspace_files_and_problem_rows_keep_provenance() {
@@ -37,7 +31,11 @@ fn cargo_diagnostics_map_to_workspace_files_and_problem_rows_keep_provenance() {
         Some(PathBuf::from("src/main.rs"))
     );
     assert_eq!(
-        workspace_diagnostic_path(&root, "src/main.rs", &[PathBuf::from("crates/game/src/main.rs")]),
+        workspace_diagnostic_path(
+            &root,
+            "src/main.rs",
+            &[PathBuf::from("crates/game/src/main.rs")]
+        ),
         Some(PathBuf::from("crates/game/src/main.rs")),
         "nested package-relative diagnostic paths resolve through the known file list"
     );
@@ -45,14 +43,20 @@ fn cargo_diagnostics_map_to_workspace_files_and_problem_rows_keep_provenance() {
         workspace_diagnostic_path(
             &root,
             "src/main.rs",
-            &[PathBuf::from("crates/a/src/main.rs"), PathBuf::from("crates/b/src/main.rs")],
+            &[
+                PathBuf::from("crates/a/src/main.rs"),
+                PathBuf::from("crates/b/src/main.rs")
+            ],
         ),
         None,
         "ambiguous suffix matches must not navigate to an arbitrary file"
     );
     let outside = root.with_extension("outside.rs");
     std::fs::write(&outside, "fn outside() {}\n").unwrap();
-    assert_eq!(workspace_diagnostic_path(&root, outside.to_str().unwrap(), &[]), None);
+    assert_eq!(
+        workspace_diagnostic_path(&root, outside.to_str().unwrap(), &[]),
+        None
+    );
 
     let mut store = ProblemStore::default();
     let language_diagnostic = vapor_gui_core::StructuredDiagnostic {
@@ -85,44 +89,69 @@ fn cargo_diagnostics_map_to_workspace_files_and_problem_rows_keep_provenance() {
         context: Default::default(),
     };
     store.begin_build("build-1");
-    store.push_build("build-1", ProblemRow {
-        path: workspace_diagnostic_path(&root, "src/main.rs", &[PathBuf::from("src/main.rs")]),
-        action: Some("workspace.test".to_owned()),
-        diagnostic: build_diagnostic.clone(),
-    });
-    store.push_build("build-1", ProblemRow {
-        path: workspace_diagnostic_path(&root, "src/main.rs", &[PathBuf::from("src/main.rs")]),
-        action: Some("workspace.test".to_owned()),
-        diagnostic: build_diagnostic,
-    });
-    assert_eq!(store.count(), 2, "repeated output should not duplicate a build problem");
+    store.push_build(
+        "build-1",
+        ProblemRow {
+            path: workspace_diagnostic_path(&root, "src/main.rs", &[PathBuf::from("src/main.rs")]),
+            action: Some("workspace.test".to_owned()),
+            diagnostic: build_diagnostic.clone(),
+        },
+    );
+    store.push_build(
+        "build-1",
+        ProblemRow {
+            path: workspace_diagnostic_path(&root, "src/main.rs", &[PathBuf::from("src/main.rs")]),
+            action: Some("workspace.test".to_owned()),
+            diagnostic: build_diagnostic,
+        },
+    );
+    assert_eq!(
+        store.count(),
+        2,
+        "repeated output should not duplicate a build problem"
+    );
     let rows = store.rows();
     assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0].diagnostic.origin, vapor_gui_core::DiagnosticOrigin::RustAnalyzer);
-    assert_eq!(rows[1].diagnostic.origin, vapor_gui_core::DiagnosticOrigin::Cargo);
+    assert_eq!(
+        rows[0].diagnostic.origin,
+        vapor_gui_core::DiagnosticOrigin::RustAnalyzer
+    );
+    assert_eq!(
+        rows[1].diagnostic.origin,
+        vapor_gui_core::DiagnosticOrigin::Cargo
+    );
     assert_eq!(rows[1].action, Some("workspace.test"));
-    assert_eq!(rows[1].diagnostic.context.operation_id.as_deref(), Some("build-1"));
+    assert_eq!(
+        rows[1].diagnostic.context.operation_id.as_deref(),
+        Some("build-1")
+    );
 
     store.begin_build("build-2");
-    store.push_build("build-1", ProblemRow {
-        path: Some(PathBuf::from("src/main.rs")),
-        action: Some("workspace.test".to_owned()),
-        diagnostic: vapor_gui_core::StructuredDiagnostic {
-            origin: vapor_gui_core::DiagnosticOrigin::Cargo,
-            severity: vapor_gui_core::DiagnosticSeverity::Error,
-            code: Some("E0425".to_owned()),
-            message: "cannot find value".to_owned(),
-            rendered: None,
-            primary: None,
-            related: Vec::new(),
+    store.push_build(
+        "build-1",
+        ProblemRow {
+            path: Some(PathBuf::from("src/main.rs")),
+            action: Some("workspace.test".to_owned()),
+            diagnostic: vapor_gui_core::StructuredDiagnostic {
+                origin: vapor_gui_core::DiagnosticOrigin::Cargo,
+                severity: vapor_gui_core::DiagnosticSeverity::Error,
+                code: Some("E0425".to_owned()),
+                message: "cannot find value".to_owned(),
+                rendered: None,
+                primary: None,
+                related: Vec::new(),
 
-            raw_payload: "{\"reason\":\"compiler-message\"}".to_owned(),
-            context: Default::default(),
+                raw_payload: "{\"reason\":\"compiler-message\"}".to_owned(),
+                context: Default::default(),
+            },
         },
-    });
+    );
     let rows = store.rows();
     assert_eq!(rows.len(), 1, "late output from a prior build is ignored");
-    assert_eq!(rows[0].diagnostic.origin, vapor_gui_core::DiagnosticOrigin::RustAnalyzer);
+    assert_eq!(
+        rows[0].diagnostic.origin,
+        vapor_gui_core::DiagnosticOrigin::RustAnalyzer
+    );
 
     std::fs::remove_dir_all(&root).unwrap();
     let _ = std::fs::remove_file(outside);
@@ -176,7 +205,10 @@ fn source_producers_keep_independent_diagnostics_for_one_document() {
     );
     let rows = store.rows();
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].diagnostic.origin, vapor_gui_core::DiagnosticOrigin::Vapor);
+    assert_eq!(
+        rows[0].diagnostic.origin,
+        vapor_gui_core::DiagnosticOrigin::Vapor
+    );
 }
 
 #[test]
@@ -250,19 +282,44 @@ fn semantic_reference_results_are_discarded_after_selection_changes() {
     };
     let path = Path::new("src/components.rs");
     assert!(reference_request_matches_selection(
-        path, Some(&selected), None, 0, None, Some(&selected)
+        path,
+        Some(&selected),
+        None,
+        0,
+        None,
+        Some(&selected)
     ));
     assert!(!reference_request_matches_selection(
-        path, Some(&selected), None, 0, None, Some(&other)
+        path,
+        Some(&selected),
+        None,
+        0,
+        None,
+        Some(&other)
     ));
     assert!(reference_request_matches_selection(
-        path, None, Some(4), 4, Some(&path.to_path_buf()), None
+        path,
+        None,
+        Some(4),
+        4,
+        Some(&path.to_path_buf()),
+        None
     ));
     assert!(!reference_request_matches_selection(
-        path, None, Some(4), 5, Some(&path.to_path_buf()), None
+        path,
+        None,
+        Some(4),
+        5,
+        Some(&path.to_path_buf()),
+        None
     ));
     assert!(!reference_request_matches_selection(
-        path, None, None, 0, Some(&PathBuf::from("src/lib.rs")), None
+        path,
+        None,
+        None,
+        0,
+        Some(&PathBuf::from("src/lib.rs")),
+        None
     ));
 }
 
@@ -298,7 +355,12 @@ fn semantic_inspector_reports_the_rust_marker_that_classified_a_type() {
 
 #[test]
 fn only_compiler_workflows_replace_build_problems() {
-    for action in ["workspace.build", "workspace.check", "workspace.test", "workspace.validate"] {
+    for action in [
+        "workspace.build",
+        "workspace.check",
+        "workspace.test",
+        "workspace.validate",
+    ] {
         assert!(operation_produces_build_diagnostics(action), "{action}");
     }
     for action in ["workspace.fmt", "workspace.publish", "composition.launch"] {
@@ -339,11 +401,23 @@ fn edit_preview_requires_the_exact_document_revision_and_original_text() {
     assert_eq!(current.contents, preview.proposed_contents);
     assert!(current.is_dirty());
 
-    let mut stale = Document { version: 5, ..current.clone() };
-    assert_eq!(apply_versioned_edit(&mut stale, &preview), Err(EditPreviewApplyError::Stale));
+    let mut stale = Document {
+        version: 5,
+        ..current.clone()
+    };
+    assert_eq!(
+        apply_versioned_edit(&mut stale, &preview),
+        Err(EditPreviewApplyError::Stale)
+    );
 
-    let mut changed = Document { contents: "concurrent edit".to_owned(), ..current };
-    assert_eq!(apply_versioned_edit(&mut changed, &preview), Err(EditPreviewApplyError::Stale));
+    let mut changed = Document {
+        contents: "concurrent edit".to_owned(),
+        ..current
+    };
+    assert_eq!(
+        apply_versioned_edit(&mut changed, &preview),
+        Err(EditPreviewApplyError::Stale)
+    );
 }
 
 #[test]
@@ -406,18 +480,34 @@ fn rust_analyzer_initialization_disables_implicit_cargo_build_work() {
 #[test]
 fn rust_analyzer_client_capabilities_advertise_previewable_quick_fixes_without_server_writes() {
     let capabilities = rust_analyzer_client_capabilities();
-    assert_eq!(capabilities["textDocument"]["codeAction"]["dynamicRegistration"], false);
-    assert_eq!(capabilities["textDocument"]["codeAction"]["codeActionLiteralSupport"]["codeActionKind"]["valueSet"][0], "quickfix");
+    assert_eq!(
+        capabilities["textDocument"]["codeAction"]["dynamicRegistration"],
+        false
+    );
+    assert_eq!(
+        capabilities["textDocument"]["codeAction"]["codeActionLiteralSupport"]["codeActionKind"]["valueSet"]
+            [0],
+        "quickfix"
+    );
     assert_eq!(capabilities["workspace"]["applyEdit"], false);
-    assert_eq!(capabilities["workspace"]["workspaceEdit"]["documentChanges"], true);
+    assert_eq!(
+        capabilities["workspace"]["workspaceEdit"]["documentChanges"],
+        true
+    );
 }
 
 #[test]
 fn workspace_diagnostic_paths_normalize_absolute_and_relative_files() {
     let root = std::env::temp_dir().join("vapor-ide-workspace-path-test");
     let file = root.join("src/main.rs");
-    assert_eq!(relative_workspace_path(&root, &file), Some(PathBuf::from("src/main.rs")));
-    assert_eq!(relative_workspace_path(&root, Path::new("src/main.rs")), Some(PathBuf::from("src/main.rs")));
+    assert_eq!(
+        relative_workspace_path(&root, &file),
+        Some(PathBuf::from("src/main.rs"))
+    );
+    assert_eq!(
+        relative_workspace_path(&root, Path::new("src/main.rs")),
+        Some(PathBuf::from("src/main.rs"))
+    );
 }
 
 #[test]
@@ -458,10 +548,21 @@ fn semantic_search_finds_component_metadata_and_member_types() {
         }],
     };
 
-    assert!(super::semantic_view::semantic_tree_matches(&component, "vec3"));
-    assert!(super::semantic_view::semantic_tree_matches(&component, "derive(component)"));
-    assert!(super::semantic_view::semantic_tree_matches(&component, "component"));
-    assert!(super::semantic_view::semantic_tree_matches(&component, "serde(default)"));
+    assert!(super::semantic_view::semantic_tree_matches(
+        &component, "vec3"
+    ));
+    assert!(super::semantic_view::semantic_tree_matches(
+        &component,
+        "derive(component)"
+    ));
+    assert!(super::semantic_view::semantic_tree_matches(
+        &component,
+        "component"
+    ));
+    assert!(super::semantic_view::semantic_tree_matches(
+        &component,
+        "serde(default)"
+    ));
 }
 
 #[test]
@@ -483,7 +584,12 @@ fn rust_analyzer_symbols_become_component_objects_with_typed_fields() {
     let symbols = parse_semantic_symbols(&response, Path::new("src/components.rs"), 7, source);
     assert_eq!(symbols.len(), 1);
     assert_eq!(symbols[0].kind, SemanticObjectKind::Component);
-    assert!(symbols[0].attributes.iter().any(|attribute| attribute.contains("derive")));
+    assert!(
+        symbols[0]
+            .attributes
+            .iter()
+            .any(|attribute| attribute.contains("derive"))
+    );
     assert_eq!(symbols[0].children[0].detail.as_deref(), Some("Vec3"));
     assert_eq!(symbols[0].children[0].attributes, ["#[serde(default)]"]);
 }
@@ -520,6 +626,62 @@ fn rust_document_symbol_index_has_a_visible_bound_for_large_responses() {
     );
 
     assert_eq!(parsed.objects.len(), 4_096);
+    assert!(parsed.truncated);
+}
+
+#[test]
+fn rust_source_has_a_local_semantic_outline_before_rust_analyzer_replies() {
+    let source = "#[derive(bevy::prelude::Component)]\npub struct Ship {\n    pub id: u64,\n    velocity: Vec3,\n}\n\nimpl Ship {\n    pub fn thrust(&mut self, amount: f32) {}\n}\n";
+
+    let parsed = super::rust_semantics::parse_local_rust_semantic_document(
+        Path::new("src/components.rs"),
+        source,
+    );
+
+    assert_eq!(parsed.objects.len(), 2);
+    let ship = &parsed.objects[0];
+    assert_eq!(ship.kind, SemanticObjectKind::Component);
+    assert_eq!(ship.name, "Ship");
+    assert_eq!(ship.selection_range.start.line, 1);
+    let id = ship
+        .children
+        .iter()
+        .find(|member| member.name == "id")
+        .unwrap();
+    assert_eq!(id.kind, SemanticObjectKind::Field);
+    assert_eq!(id.detail.as_deref(), Some("u64"));
+    assert_eq!(id.selection_range.start.line, 2);
+    assert_eq!(id.id.path, ["Ship", "id"]);
+    let implementation = &parsed.objects[1];
+    let thrust = implementation
+        .children
+        .iter()
+        .find(|member| member.name == "thrust")
+        .unwrap();
+    assert_eq!(thrust.kind, SemanticObjectKind::Method);
+    assert_eq!(thrust.selection_range.start.line, 7);
+    assert_eq!(thrust.id.path, ["impl Ship", "thrust"]);
+    assert_eq!(
+        thrust.children[0].id.path,
+        ["impl Ship", "thrust", "self#0"]
+    );
+    assert!(!parsed.truncated);
+}
+
+#[test]
+fn local_rust_outline_bounds_nested_members_by_the_document_budget() {
+    let fields = (0..4_200)
+        .map(|index| format!("field_{index}: u8"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let source = format!("struct Large {{ {fields} }}");
+    let parsed = super::rust_semantics::parse_local_rust_semantic_document(
+        Path::new("src/types.rs"),
+        &source,
+    );
+
+    assert_eq!(parsed.objects.len(), 1);
+    assert_eq!(parsed.objects[0].children.len(), 4_095);
     assert!(parsed.truncated);
 }
 
@@ -561,25 +723,28 @@ fn rust_layout_rules_report_specialized_types_outside_their_canonical_modules() 
         "selectionRange": {"start": {"line": 1, "character": 11}, "end": {"line": 1, "character": 15}}
     }]);
     let misplaced = parse_semantic_symbols(&response, Path::new("src/engine.rs"), 1, source);
-    let diagnostics = super::rust_semantics::convention_diagnostics(
-        Path::new("src/engine.rs"),
-        &misplaced,
-    );
+    let diagnostics =
+        super::rust_semantics::convention_diagnostics(Path::new("src/engine.rs"), &misplaced);
     assert_eq!(diagnostics.len(), 1);
-    assert_eq!(diagnostics[0].code.as_deref(), Some("vapor.rust.layout.component"));
+    assert_eq!(
+        diagnostics[0].code.as_deref(),
+        Some("vapor.rust.layout.component")
+    );
     assert_eq!(diagnostics[0].primary.as_ref().unwrap().start_line, 2);
 
     let canonical = parse_semantic_symbols(&response, Path::new("src/components.rs"), 1, source);
-    assert!(super::rust_semantics::convention_diagnostics(
-        Path::new("src/components.rs"),
-        &canonical,
-    )
-    .is_empty());
+    assert!(
+        super::rust_semantics::convention_diagnostics(Path::new("src/components.rs"), &canonical,)
+            .is_empty()
+    );
 }
 
 #[test]
 fn rust_mod_labels_disambiguate_same_named_file_and_module() {
-    let paths = [PathBuf::from("crates/flight/src/game.rs"), PathBuf::from("crates/flight/src/game/mod.rs")];
+    let paths = [
+        PathBuf::from("crates/flight/src/game.rs"),
+        PathBuf::from("crates/flight/src/game/mod.rs"),
+    ];
     let file_label = file_display_label(&paths[0], &paths);
     let module_label = file_display_label(&paths[1], &paths);
 
@@ -599,18 +764,26 @@ fn rust_layout_rules_cover_generic_types_functions_constants_and_statics() {
         {"name":"VERSION","kind":13,"range":{"start":{"line":3,"character":0},"end":{"line":3,"character":36}},"selectionRange":{"start":{"line":3,"character":11},"end":{"line":3,"character":18}}}
     ]);
     let objects = parse_semantic_symbols(&response, Path::new("src/engine.rs"), 1, source);
-    let diagnostics = super::rust_semantics::convention_diagnostics(
-        Path::new("src/engine.rs"),
-        &objects,
+    let diagnostics =
+        super::rust_semantics::convention_diagnostics(Path::new("src/engine.rs"), &objects);
+    let codes = diagnostics
+        .iter()
+        .filter_map(|diagnostic| diagnostic.code.as_deref())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        codes,
+        [
+            "vapor.rust.layout.type",
+            "vapor.rust.layout.function",
+            "vapor.rust.layout.constant",
+            "vapor.rust.layout.static",
+        ]
     );
-    let codes = diagnostics.iter().filter_map(|diagnostic| diagnostic.code.as_deref()).collect::<Vec<_>>();
-    assert_eq!(codes, [
-        "vapor.rust.layout.type",
-        "vapor.rust.layout.function",
-        "vapor.rust.layout.constant",
-        "vapor.rust.layout.static",
-    ]);
-    assert!(diagnostics.iter().all(|diagnostic| diagnostic.message.contains("belongs in")));
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.message.contains("belongs in"))
+    );
 }
 
 #[test]
@@ -640,10 +813,8 @@ fn rust_workspace_symbols_are_project_scoped_and_keep_source_ranges() {
             }
         }
     ]);
-    let symbols = super::rust_semantics::parse_workspace_symbols(
-        &response,
-        Path::new("/fixture/workspace"),
-    );
+    let symbols =
+        super::rust_semantics::parse_workspace_symbols(&response, Path::new("/fixture/workspace"));
 
     assert_eq!(symbols.len(), 1);
     assert_eq!(symbols[0].name, "Ship");
@@ -684,8 +855,24 @@ fn superseded_document_symbol_requests_are_scoped_to_the_same_file() {
 #[test]
 fn rust_workspace_results_require_the_exact_open_document_revision_set() {
     let mut documents = BTreeMap::from([
-        (PathBuf::from("src/lib.rs"), Document { contents: String::new(), fingerprint: String::new(), saved_contents: String::new(), version: 4 }),
-        (PathBuf::from("src/game.rs"), Document { contents: String::new(), fingerprint: String::new(), saved_contents: String::new(), version: 9 }),
+        (
+            PathBuf::from("src/lib.rs"),
+            Document {
+                contents: String::new(),
+                fingerprint: String::new(),
+                saved_contents: String::new(),
+                version: 4,
+            },
+        ),
+        (
+            PathBuf::from("src/game.rs"),
+            Document {
+                contents: String::new(),
+                fingerprint: String::new(),
+                saved_contents: String::new(),
+                version: 9,
+            },
+        ),
     ]);
     let snapshot = BTreeMap::from([
         (PathBuf::from("src/lib.rs"), 4),
@@ -704,8 +891,24 @@ fn rust_workspace_results_require_the_exact_open_document_revision_set() {
 fn quick_fix_results_require_the_origin_document_and_full_workspace_snapshot() {
     let source = PathBuf::from("src/lib.rs");
     let mut documents = BTreeMap::from([
-        (source.clone(), Document { contents: String::new(), fingerprint: String::new(), saved_contents: String::new(), version: 4 }),
-        (PathBuf::from("src/game.rs"), Document { contents: String::new(), fingerprint: String::new(), saved_contents: String::new(), version: 9 }),
+        (
+            source.clone(),
+            Document {
+                contents: String::new(),
+                fingerprint: String::new(),
+                saved_contents: String::new(),
+                version: 4,
+            },
+        ),
+        (
+            PathBuf::from("src/game.rs"),
+            Document {
+                contents: String::new(),
+                fingerprint: String::new(),
+                saved_contents: String::new(),
+                version: 9,
+            },
+        ),
     ]);
     let request = super::PendingLspRequest {
         request: super::LspRequest::CodeActions,
@@ -731,7 +934,11 @@ fn quick_fix_results_require_the_origin_document_and_full_workspace_snapshot() {
 #[test]
 fn toml_semantics_preserve_nested_source_ranges_and_utf16_positions() {
     let source = "title = \"λ\"\n\n[[root.content]]\nid = \"ghf/example\"\nversion = \"0.1.0\"\n";
-    let objects = super::toml_semantics::parse_toml_semantic_objects(Path::new("Workspace.vapor.toml"), source).unwrap();
+    let objects = super::toml_semantics::parse_toml_semantic_objects(
+        Path::new("Workspace.vapor.toml"),
+        source,
+    )
+    .unwrap();
     assert_eq!(objects[0].id.domain, "vapor-workspace");
     assert_eq!(objects[0].selection_range.start.line, 0);
     let root = &objects[1];
@@ -748,13 +955,24 @@ fn toml_semantics_preserve_nested_source_ranges_and_utf16_positions() {
 #[test]
 fn vapor_manifest_objects_explain_identity_and_content_references() {
     let source = "[packagepack]\nname = \"demo\"\nversion = \"0.1.0\"\n[packagepack.game]\nid = \"ghf-studios/example/game\"\n";
-    let objects = super::toml_semantics::parse_toml_semantic_objects(Path::new("Packagepack.vapor.toml"), source)
-        .expect("valid Vapor TOML");
+    let objects = super::toml_semantics::parse_toml_semantic_objects(
+        Path::new("Packagepack.vapor.toml"),
+        source,
+    )
+    .expect("valid Vapor TOML");
     let pack = &objects[0];
     assert_eq!(pack.id.domain, "vapor-packagepack");
-    let name = pack.children.iter().find(|child| child.name == "name").unwrap();
+    let name = pack
+        .children
+        .iter()
+        .find(|child| child.name == "name")
+        .unwrap();
     assert_eq!(name.attributes, ["Declared local identity"]);
-    let game = pack.children.iter().find(|child| child.name == "game").unwrap();
+    let game = pack
+        .children
+        .iter()
+        .find(|child| child.name == "game")
+        .unwrap();
     assert_eq!(game.name, "game");
     assert_eq!(game.children[0].attributes, ["Vapor content reference"]);
     assert_eq!(game.children[0].id.qualified_name(), "packagepack.game.id");
@@ -763,8 +981,11 @@ fn vapor_manifest_objects_explain_identity_and_content_references() {
 #[test]
 fn toml_semantics_index_inline_tables_and_array_entries_without_values() {
     let source = "items = [{ id = \"private-value\", flags = [\"a\", \"b\"] }]\n";
-    let objects = super::toml_semantics::parse_toml_semantic_objects(Path::new("Packagepack.vapor.toml"), source)
-        .expect("valid TOML");
+    let objects = super::toml_semantics::parse_toml_semantic_objects(
+        Path::new("Packagepack.vapor.toml"),
+        source,
+    )
+    .expect("valid TOML");
     let items = &objects[0];
     assert_eq!(items.kind, SemanticObjectKind::Array);
     let entry = &items.children[0];
@@ -808,8 +1029,14 @@ fn rust_labels_hide_extensions_and_use_shortest_unique_module_path() {
     ];
     assert_eq!(rust_label_parts(&candidates[2]), ["main"]);
     assert_eq!(file_display_label(&candidates[2], &candidates), "main");
-    assert_eq!(shortest_rust_label(&candidates[0], &candidates), "engine/game");
-    assert_eq!(shortest_rust_label(&candidates[1], &candidates), "editor/game");
+    assert_eq!(
+        shortest_rust_label(&candidates[0], &candidates),
+        "engine/game"
+    );
+    assert_eq!(
+        shortest_rust_label(&candidates[1], &candidates),
+        "editor/game"
+    );
 }
 
 #[test]
@@ -852,10 +1079,12 @@ fn rust_tree_ordering_is_limited_to_actual_cargo_crate_roots() {
 #[test]
 fn reference_results_are_workspace_relative_and_skip_external_paths() {
     let mut locations = (0..650)
-        .map(|_| serde_json::json!({
-            "uri": "file:///workspace/src/lib.rs",
-            "range": {"start": {"line": 4, "character": 8}}
-        }))
+        .map(|_| {
+            serde_json::json!({
+                "uri": "file:///workspace/src/lib.rs",
+                "range": {"start": {"line": 4, "character": 8}}
+            })
+        })
         .collect::<Vec<_>>();
     locations.push(serde_json::json!({
         "uri": "file:///outside/lib.rs",
@@ -886,7 +1115,10 @@ fn lsp_positions_use_utf16_and_navigate_back_to_utf8_offsets() {
         serde_json::json!({"line": 0, "character": 4})
     );
     assert_eq!(position_to_byte_offset(source, 0, 4), Some("aλ🦀".len()));
-    assert_eq!(position_to_byte_offset(source, 1, 2), Some("aλ🦀\r\nne".len()));
+    assert_eq!(
+        position_to_byte_offset(source, 1, 2),
+        Some("aλ🦀\r\nne".len())
+    );
 }
 
 #[test]
@@ -902,8 +1134,14 @@ fn selecting_a_semantic_object_highlights_its_current_source_range() {
         name: "Ship".to_owned(),
         detail: None,
         range: vapor_gui_core::semantic::SemanticRange {
-            start: vapor_gui_core::semantic::SemanticPosition { line: 0, character: 0 },
-            end: vapor_gui_core::semantic::SemanticPosition { line: 2, character: 1 },
+            start: vapor_gui_core::semantic::SemanticPosition {
+                line: 0,
+                character: 0,
+            },
+            end: vapor_gui_core::semantic::SemanticPosition {
+                line: 2,
+                character: 1,
+            },
         },
         selection_range: vapor_gui_core::semantic::SemanticRange::default(),
         attributes: Vec::new(),
@@ -934,7 +1172,10 @@ fn large_rust_files_disable_semantic_expansion_without_losing_editing_diagnostic
 
     assert!(parsed.objects.is_empty());
     assert!(parsed.truncated);
-    assert_eq!(diagnostic.code.as_deref(), Some("vapor.semantic.source-limit"));
+    assert_eq!(
+        diagnostic.code.as_deref(),
+        Some("vapor.semantic.source-limit")
+    );
     assert!(diagnostic.message.contains("editing remains available"));
     assert!(diagnostic.raw_payload.len() < 256);
 }
@@ -1063,28 +1304,15 @@ fn editor_tabs_disambiguate_duplicate_file_names_with_shortest_path_suffix() {
         ),
     ]);
 
-    assert_eq!(
-        document_tab_label(Path::new("src/a/mod.rs"), &open),
-        "a"
-    );
-    assert_eq!(
-        document_tab_label(Path::new("src/b/mod.rs"), &open),
-        "b"
-    );
-    assert_eq!(
-        document_tab_label(Path::new("src/main.rs"), &open),
-        "main"
-    );
+    assert_eq!(document_tab_label(Path::new("src/a/mod.rs"), &open), "a");
+    assert_eq!(document_tab_label(Path::new("src/b/mod.rs"), &open), "b");
+    assert_eq!(document_tab_label(Path::new("src/main.rs"), &open), "main");
 }
 #[test]
 fn canonical_rust_item_templates_follow_the_selected_module() {
     let source = "//! Components for the game.\n";
-    let rendered = render_canonical_rust_item(
-        Path::new("src/components.rs"),
-        source,
-        "Ship",
-    )
-    .expect("component template");
+    let rendered = render_canonical_rust_item(Path::new("src/components.rs"), source, "Ship")
+        .expect("component template");
     assert_eq!(
         rendered,
         "//! Components for the game.\n\n#[derive(bevy::prelude::Component)]\npub struct Ship;\n"
@@ -1107,8 +1335,17 @@ fn canonical_rust_item_templates_reject_invalid_or_duplicate_names() {
     assert!(render_canonical_rust_item(path, "", &"A".repeat(129)).is_err());
     assert!(render_canonical_rust_item(Path::new("src/functions.rs"), "", "buildScene").is_err());
     assert!(render_canonical_rust_item(Path::new("src/constants.rs"), "", "Title").is_err());
-    assert!(render_canonical_rust_item(Path::new("src/functions.rs"), "pub const run: &str = \"\";", "run").is_err());
-    assert!(render_canonical_rust_item(Path::new("src/functions.rs"), "not rust", "new_item").is_err());
+    assert!(
+        render_canonical_rust_item(
+            Path::new("src/functions.rs"),
+            "pub const run: &str = \"\";",
+            "run"
+        )
+        .is_err()
+    );
+    assert!(
+        render_canonical_rust_item(Path::new("src/functions.rs"), "not rust", "new_item").is_err()
+    );
     assert!(render_canonical_rust_item(Path::new("tests/components.rs"), "", "Ship").is_err());
     assert!(render_canonical_rust_item(path, "pub struct r#type;", "r#type").is_err());
 }
@@ -1131,12 +1368,23 @@ fn canonical_rust_item_templates_cover_each_owned_module_kind() {
         ("src/types.rs", "GameState", "pub struct GameState;"),
         ("src/functions.rs", "build_scene", "pub fn build_scene()"),
         ("src/systems.rs", "update_scene", "pub fn update_scene()"),
-        ("src/run_conditions.rs", "is_ready", "pub fn is_ready() -> bool"),
+        (
+            "src/run_conditions.rs",
+            "is_ready",
+            "pub fn is_ready() -> bool",
+        ),
         ("src/constants.rs", "TITLE", "pub const TITLE: &str"),
-        ("src/statics.rs", "DEFAULT_TITLE", "pub static DEFAULT_TITLE: &str"),
+        (
+            "src/statics.rs",
+            "DEFAULT_TITLE",
+            "pub static DEFAULT_TITLE: &str",
+        ),
     ] {
         let rendered = render_canonical_rust_item(Path::new(path), "", name).unwrap();
-        assert!(rendered.contains(expected), "{path} should use its own template");
+        assert!(
+            rendered.contains(expected),
+            "{path} should use its own template"
+        );
         syn::parse_file(&rendered).expect("template produces valid Rust syntax");
     }
     assert!(matches!(
@@ -1215,12 +1463,27 @@ fn source_diagnostic_context_adds_workspace_revision_without_erasing_domain_scop
     let mut diagnostics = vec![document, unspecified];
     super::diagnostics::attach_document_context(&mut diagnostics, Path::new("/workspace/game"), 12);
 
-    assert_eq!(diagnostics[0].context.domain.as_deref(), Some("vapor-packagepack"));
-    assert_eq!(diagnostics[0].context.scope, vapor_gui_core::DiagnosticScope::Document);
-    assert_eq!(diagnostics[0].context.semantic_path.as_deref(), Some("packagepack.dependencies"));
-    assert_eq!(diagnostics[0].context.workspace.as_deref(), Some("/workspace/game"));
+    assert_eq!(
+        diagnostics[0].context.domain.as_deref(),
+        Some("vapor-packagepack")
+    );
+    assert_eq!(
+        diagnostics[0].context.scope,
+        vapor_gui_core::DiagnosticScope::Document
+    );
+    assert_eq!(
+        diagnostics[0].context.semantic_path.as_deref(),
+        Some("packagepack.dependencies")
+    );
+    assert_eq!(
+        diagnostics[0].context.workspace.as_deref(),
+        Some("/workspace/game")
+    );
     assert_eq!(diagnostics[0].context.document_version, Some(12));
-    assert_eq!(diagnostics[1].context.scope, vapor_gui_core::DiagnosticScope::Document);
+    assert_eq!(
+        diagnostics[1].context.scope,
+        vapor_gui_core::DiagnosticScope::Document
+    );
     assert_eq!(diagnostics[1].context.document_version, Some(12));
 }
 
@@ -1236,4 +1499,3 @@ fn rust_quick_fixes_keep_only_direct_edit_actions_with_titles() {
     assert_eq!(actions.len(), 1);
     assert_eq!(actions[0].title, "Add derive");
 }
-

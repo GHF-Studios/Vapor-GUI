@@ -25,9 +25,7 @@ pub(super) struct LanguageServerCodeAction {
     pub(super) edit: serde_json::Value,
 }
 
-pub(super) fn parse_edit_code_actions(
-    result: &serde_json::Value,
-) -> Vec<LanguageServerCodeAction> {
+pub(super) fn parse_edit_code_actions(result: &serde_json::Value) -> Vec<LanguageServerCodeAction> {
     let Some(actions) = result.as_array() else {
         return Vec::new();
     };
@@ -67,8 +65,7 @@ pub(super) fn pending_lsp_requests_for_cancellation(
     requests
         .iter()
         .filter_map(|(id, pending)| {
-            (pending.request == request
-                && path.is_none_or(|path| pending.path == path))
+            (pending.request == request && path.is_none_or(|path| pending.path == path))
                 .then_some(*id)
         })
         .collect()
@@ -98,7 +95,6 @@ pub(super) fn pending_request_snapshot_is_current(
             .as_ref()
             .is_some_and(|versions| workspace_versions_match(versions, documents))
 }
-
 
 impl IdeApp {
     pub(super) fn send_language_server_action(
@@ -205,16 +201,21 @@ impl IdeApp {
             return;
         }
         let Some(document) = self.editor.documents.get(path) else {
-            self.workspace.status = "Open this source file before requesting a quick fix.".to_owned();
+            self.workspace.status =
+                "Open this source file before requesting a quick fix.".to_owned();
             return;
         };
         let Some(span) = diagnostic.primary.as_ref() else {
-            self.workspace.status = "This diagnostic has no source range for a quick fix.".to_owned();
+            self.workspace.status =
+                "This diagnostic has no source range for a quick fix.".to_owned();
             return;
         };
         let message_id = self.language_server.next_request_id;
-        self.language_server.next_request_id = self.language_server.next_request_id.saturating_add(1);
-        let workspace_versions = self.editor.documents
+        self.language_server.next_request_id =
+            self.language_server.next_request_id.saturating_add(1);
+        let workspace_versions = self
+            .editor
+            .documents
             .iter()
             .map(|(path, document)| (path.clone(), document.version))
             .collect();
@@ -252,15 +253,18 @@ impl IdeApp {
         });
         self.language_server.code_actions.clear();
         self.language_server.code_action_request = None;
-        self.language_server.pending_requests.insert(message_id, PendingLspRequest {
-            request: LspRequest::CodeActions,
-            path: path.to_path_buf(),
-            document_version: document.version,
-            semantic_target: None,
-            cursor_offset: None,
-            workspace_versions: Some(workspace_versions),
-            query: None,
-        });
+        self.language_server.pending_requests.insert(
+            message_id,
+            PendingLspRequest {
+                request: LspRequest::CodeActions,
+                path: path.to_path_buf(),
+                document_version: document.version,
+                semantic_target: None,
+                cursor_offset: None,
+                workspace_versions: Some(workspace_versions),
+                query: None,
+            },
+        );
         self.workspace.status = "Asking Rust Analyzer for safe, reviewable quick fixes…".to_owned();
         self.send_language_server_notification(message);
     }
@@ -278,23 +282,27 @@ impl IdeApp {
             return;
         }
         if path.extension().is_none_or(|extension| extension != "rs") {
-            self.workspace.status = "This language feature is available for Rust source files.".to_owned();
+            self.workspace.status =
+                "This language feature is available for Rust source files.".to_owned();
             return;
         }
         let Some(document) = self.editor.documents.get(path) else {
-            self.workspace.status = "Open the source file before requesting Rust Analyzer references.".to_owned();
+            self.workspace.status =
+                "Open the source file before requesting Rust Analyzer references.".to_owned();
             return;
         };
         let document_version = document.version;
         let uri = self.document_uri(path);
         let workspace_versions = matches!(request, LspRequest::References).then(|| {
-            self.editor.documents
+            self.editor
+                .documents
                 .iter()
                 .map(|(path, document)| (path.clone(), document.version))
                 .collect()
         });
         let message_id = self.language_server.next_request_id;
-        self.language_server.next_request_id = self.language_server.next_request_id.saturating_add(1);
+        self.language_server.next_request_id =
+            self.language_server.next_request_id.saturating_add(1);
         let mut message = serde_json::json!({
             "jsonrpc": "2.0",
             "id": message_id,
@@ -315,8 +323,9 @@ impl IdeApp {
                 request,
                 path: path.to_path_buf(),
                 document_version,
-                cursor_offset: (matches!(request, LspRequest::References) && semantic_target.is_none())
-                    .then_some(self.editor.cursor_offset),
+                cursor_offset: (matches!(request, LspRequest::References)
+                    && semantic_target.is_none())
+                .then_some(self.editor.cursor_offset),
                 semantic_target,
                 workspace_versions,
                 query: None,
@@ -326,7 +335,8 @@ impl IdeApp {
     }
 
     pub(super) fn request_document_symbols(&mut self, path: &Path) {
-        if !self.language_server.ready || path.extension().is_none_or(|extension| extension != "rs") {
+        if !self.language_server.ready || path.extension().is_none_or(|extension| extension != "rs")
+        {
             return;
         }
         let Some(document) = self.editor.documents.get(path) else {
@@ -346,22 +356,26 @@ impl IdeApp {
             }));
         }
         let message_id = self.language_server.next_request_id;
-        self.language_server.next_request_id = self.language_server.next_request_id.saturating_add(1);
+        self.language_server.next_request_id =
+            self.language_server.next_request_id.saturating_add(1);
         let message = serde_json::json!({
             "jsonrpc": "2.0",
             "id": message_id,
             "method": "textDocument/documentSymbol",
             "params": {"textDocument": {"uri": self.document_uri(path)}}
         });
-        self.language_server.pending_requests.insert(message_id, PendingLspRequest {
-            request: LspRequest::DocumentSymbols,
-            path: path.to_path_buf(),
-            document_version: version,
-            semantic_target: None,
-            cursor_offset: None,
-            workspace_versions: None,
-            query: None,
-        });
+        self.language_server.pending_requests.insert(
+            message_id,
+            PendingLspRequest {
+                request: LspRequest::DocumentSymbols,
+                path: path.to_path_buf(),
+                document_version: version,
+                semantic_target: None,
+                cursor_offset: None,
+                workspace_versions: None,
+                query: None,
+            },
+        );
         self.send_language_server_notification(message);
     }
 
@@ -372,7 +386,9 @@ impl IdeApp {
             self.language_server.workspace_symbols.clear();
             return;
         }
-        if !self.language_server.ready || self.language_server.workspace_symbol_query.as_deref() == Some(query) {
+        if !self.language_server.ready
+            || self.language_server.workspace_symbol_query.as_deref() == Some(query)
+        {
             return;
         }
         let Some(root) = self.workspace.root.clone() else {
@@ -394,8 +410,11 @@ impl IdeApp {
         }
 
         let message_id = self.language_server.next_request_id;
-        self.language_server.next_request_id = self.language_server.next_request_id.saturating_add(1);
-        let workspace_versions = self.editor.documents
+        self.language_server.next_request_id =
+            self.language_server.next_request_id.saturating_add(1);
+        let workspace_versions = self
+            .editor
+            .documents
             .iter()
             .map(|(path, document)| (path.clone(), document.version))
             .collect();
@@ -405,15 +424,18 @@ impl IdeApp {
             "method": "workspace/symbol",
             "params": {"query": query}
         });
-        self.language_server.pending_requests.insert(message_id, PendingLspRequest {
-            request: LspRequest::WorkspaceSymbols,
-            path: root,
-            document_version: 0,
-            semantic_target: None,
-            cursor_offset: None,
-            workspace_versions: Some(workspace_versions),
-            query: Some(query.to_owned()),
-        });
+        self.language_server.pending_requests.insert(
+            message_id,
+            PendingLspRequest {
+                request: LspRequest::WorkspaceSymbols,
+                path: root,
+                document_version: 0,
+                semantic_target: None,
+                cursor_offset: None,
+                workspace_versions: Some(workspace_versions),
+                query: Some(query.to_owned()),
+            },
+        );
         self.language_server.workspace_symbols.clear();
         self.language_server.workspace_symbol_query = Some(query.to_owned());
         self.workspace.status = format!("Searching Rust Analyzer for `{query}`…");
@@ -433,7 +455,8 @@ impl IdeApp {
             return;
         }
         let message_id = self.language_server.next_request_id;
-        self.language_server.next_request_id = self.language_server.next_request_id.saturating_add(1);
+        self.language_server.next_request_id =
+            self.language_server.next_request_id.saturating_add(1);
         let message = serde_json::json!({
             "jsonrpc": "2.0",
             "id": message_id,
@@ -448,7 +471,11 @@ impl IdeApp {
             PendingLspRequest {
                 request: LspRequest::Formatting,
                 path: path.to_path_buf(),
-                document_version: self.editor.documents.get(path).map_or(0, |document| document.version),
+                document_version: self
+                    .editor
+                    .documents
+                    .get(path)
+                    .map_or(0, |document| document.version),
                 semantic_target: None,
                 cursor_offset: None,
                 workspace_versions: None,
@@ -460,15 +487,19 @@ impl IdeApp {
 
     pub(super) fn request_lsp_rename(&mut self, target: SemanticObjectRef, new_name: &str) {
         let Some(object) = self.semantic.index.resolve(&target) else {
-            self.workspace.status = "That semantic selection is out of date; select it again.".to_owned();
+            self.workspace.status =
+                "That semantic selection is out of date; select it again.".to_owned();
             return;
         };
         if !self.language_server.ready {
             self.workspace.status = "Rust Analyzer is not ready yet.".to_owned();
             return;
         }
-        if object.id.domain != "rust" || object.id.document.extension().is_none_or(|ext| ext != "rs") {
-            self.workspace.status = "Rename is currently available for Rust declarations.".to_owned();
+        if object.id.domain != "rust"
+            || object.id.document.extension().is_none_or(|ext| ext != "rs")
+        {
+            self.workspace.status =
+                "Rename is currently available for Rust declarations.".to_owned();
             return;
         }
         let new_name = new_name.trim();
@@ -486,12 +517,15 @@ impl IdeApp {
             "line": object.selection_range.start.line,
             "character": object.selection_range.start.character
         });
-        let workspace_versions = self.editor.documents
+        let workspace_versions = self
+            .editor
+            .documents
             .iter()
             .map(|(path, document)| (path.clone(), document.version))
             .collect();
         let message_id = self.language_server.next_request_id;
-        self.language_server.next_request_id = self.language_server.next_request_id.saturating_add(1);
+        self.language_server.next_request_id =
+            self.language_server.next_request_id.saturating_add(1);
         let message = serde_json::json!({
             "jsonrpc": "2.0",
             "id": message_id,
@@ -502,15 +536,18 @@ impl IdeApp {
                 "newName": new_name
             }
         });
-        self.language_server.pending_requests.insert(message_id, PendingLspRequest {
-            request: LspRequest::Rename,
-            path,
-            document_version,
-            semantic_target: Some(target),
-            cursor_offset: None,
-            workspace_versions: Some(workspace_versions),
-            query: None,
-        });
+        self.language_server.pending_requests.insert(
+            message_id,
+            PendingLspRequest {
+                request: LspRequest::Rename,
+                path,
+                document_version,
+                semantic_target: Some(target),
+                cursor_offset: None,
+                workspace_versions: Some(workspace_versions),
+                query: None,
+            },
+        );
         self.workspace.status = format!("Preparing Rust Analyzer rename to `{new_name}`…");
         self.send_language_server_notification(message);
     }
@@ -531,7 +568,8 @@ impl IdeApp {
         let formatted = match apply_text_edits(&document.contents, edits) {
             Ok(formatted) => formatted,
             Err(error) => {
-                self.workspace.status = format!("Could not apply Rust Analyzer formatting: {error}");
+                self.workspace.status =
+                    format!("Could not apply Rust Analyzer formatting: {error}");
                 return;
             }
         };
@@ -545,7 +583,10 @@ impl IdeApp {
             original_contents: document.contents.clone(),
             proposed_contents: formatted,
         });
-        self.workspace.status = format!("Review the Rust Analyzer formatting preview for {}.", path.display());
+        self.workspace.status = format!(
+            "Review the Rust Analyzer formatting preview for {}.",
+            path.display()
+        );
     }
 
     pub(super) fn draw_code_actions(&mut self, context: &egui::Context) {
@@ -587,10 +628,17 @@ impl IdeApp {
         if !pending_request_snapshot_is_current(&request, &self.editor.documents) {
             self.language_server.code_actions.clear();
             self.language_server.code_action_request = None;
-            self.workspace.status = "The source changed after quick fixes were requested; request them again.".to_owned();
+            self.workspace.status =
+                "The source changed after quick fixes were requested; request them again."
+                    .to_owned();
             return;
         }
-        let Some(edit) = self.language_server.code_actions.get(index).map(|action| action.edit.clone()) else {
+        let Some(edit) = self
+            .language_server
+            .code_actions
+            .get(index)
+            .map(|action| action.edit.clone())
+        else {
             return;
         };
         self.prepare_workspace_edit(&request, &edit);
@@ -598,44 +646,64 @@ impl IdeApp {
         self.language_server.code_action_request = None;
     }
 
-    pub(super) fn prepare_workspace_edit(&mut self, request: &PendingLspRequest, result: &serde_json::Value) {
+    pub(super) fn prepare_workspace_edit(
+        &mut self,
+        request: &PendingLspRequest,
+        result: &serde_json::Value,
+    ) {
         let Some(root) = self.workspace.root.as_deref() else {
-            self.workspace.status = "Open a workspace before applying language-server edits.".to_owned();
+            self.workspace.status =
+                "Open a workspace before applying language-server edits.".to_owned();
             return;
         };
         let Some(versions) = request.workspace_versions.as_ref() else {
-            self.workspace.status = "The edit request has no workspace revision snapshot.".to_owned();
+            self.workspace.status =
+                "The edit request has no workspace revision snapshot.".to_owned();
             return;
         };
         if !workspace_versions_match(versions, &self.editor.documents) {
-            self.workspace.status = "Open files changed while the edit was being prepared; request a fresh preview.".to_owned();
+            self.workspace.status =
+                "Open files changed while the edit was being prepared; request a fresh preview."
+                    .to_owned();
             return;
         }
         let mut grouped = BTreeMap::<String, (Option<i32>, Vec<serde_json::Value>)>::new();
         if let Some(changes) = result.get("changes").and_then(serde_json::Value::as_object) {
             for (uri, edits) in changes {
                 let Some(edits) = edits.as_array() else {
-                    self.workspace.status = "Rust Analyzer returned an invalid workspace edit.".to_owned();
+                    self.workspace.status =
+                        "Rust Analyzer returned an invalid workspace edit.".to_owned();
                     return;
                 };
-                grouped.entry(uri.clone()).or_default().1.extend(edits.iter().cloned());
+                grouped
+                    .entry(uri.clone())
+                    .or_default()
+                    .1
+                    .extend(edits.iter().cloned());
             }
         }
-        if let Some(changes) = result.get("documentChanges").and_then(serde_json::Value::as_array) {
+        if let Some(changes) = result
+            .get("documentChanges")
+            .and_then(serde_json::Value::as_array)
+        {
             for change in changes {
                 let (Some(uri), Some(edits)) = (
-                    change.pointer("/textDocument/uri").and_then(serde_json::Value::as_str),
+                    change
+                        .pointer("/textDocument/uri")
+                        .and_then(serde_json::Value::as_str),
                     change.get("edits").and_then(serde_json::Value::as_array),
                 ) else {
                     self.workspace.status = "Rust Analyzer returned a file operation or malformed edit; it was not applied.".to_owned();
                     return;
                 };
-                let version = change.pointer("/textDocument/version")
+                let version = change
+                    .pointer("/textDocument/version")
                     .and_then(serde_json::Value::as_i64)
                     .and_then(|version| i32::try_from(version).ok());
                 let entry = grouped.entry(uri.to_owned()).or_default();
                 if entry.0.is_some() && version.is_some() && entry.0 != version {
-                    self.workspace.status = "Rust Analyzer returned conflicting document versions.".to_owned();
+                    self.workspace.status =
+                        "Rust Analyzer returned conflicting document versions.".to_owned();
                     return;
                 }
                 entry.0 = version.or(entry.0);
@@ -647,7 +715,9 @@ impl IdeApp {
             return;
         }
         if grouped.len() > 64 {
-            self.workspace.status = "This edit touches more than 64 files; narrow the operation before previewing.".to_owned();
+            self.workspace.status =
+                "This edit touches more than 64 files; narrow the operation before previewing."
+                    .to_owned();
             return;
         }
         let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
@@ -656,46 +726,69 @@ impl IdeApp {
         let mut total_bytes = 0usize;
         for (uri, (lsp_version, edits)) in grouped {
             let Some(absolute_path) = path_from_file_uri(&uri) else {
-                self.workspace.status = "Rust Analyzer returned a non-local file URI; the edit was not applied.".to_owned();
+                self.workspace.status =
+                    "Rust Analyzer returned a non-local file URI; the edit was not applied."
+                        .to_owned();
                 return;
             };
             let canonical_path = absolute_path.canonicalize().unwrap_or(absolute_path);
             if !canonical_path.starts_with(&canonical_root) {
-                self.workspace.status = "Rust Analyzer returned an edit outside this workspace; it was not applied.".to_owned();
+                self.workspace.status =
+                    "Rust Analyzer returned an edit outside this workspace; it was not applied."
+                        .to_owned();
                 return;
             }
             if !addressed_paths.insert(canonical_path.clone()) {
-                self.workspace.status = "Rust Analyzer returned conflicting edits for one file; they were not applied.".to_owned();
+                self.workspace.status =
+                    "Rust Analyzer returned conflicting edits for one file; they were not applied."
+                        .to_owned();
                 return;
             }
             let Some((path, document)) = self.editor.documents.iter().find(|(path, _)| {
-                let candidate = if path.is_absolute() { (*path).clone() } else { canonical_root.join(path) };
+                let candidate = if path.is_absolute() {
+                    (*path).clone()
+                } else {
+                    canonical_root.join(path)
+                };
                 candidate.canonicalize().unwrap_or(candidate) == canonical_path
             }) else {
-                self.workspace.status = format!("Open {} before previewing this edit; closed files are never changed implicitly.", canonical_path.display());
+                self.workspace.status = format!(
+                    "Open {} before previewing this edit; closed files are never changed implicitly.",
+                    canonical_path.display()
+                );
                 return;
             };
             let Some(snapshot_version) = versions.get(path) else {
-                self.workspace.status = format!("{} was opened after the edit began; request a fresh preview.", path.display());
+                self.workspace.status = format!(
+                    "{} was opened after the edit began; request a fresh preview.",
+                    path.display()
+                );
                 return;
             };
             if document.version != *snapshot_version
                 || lsp_version.is_some_and(|version| version != document.version)
                 || (path == &request.path && document.version != request.document_version)
             {
-                self.workspace.status = format!("{} changed while the edit was being prepared; request a fresh preview.", path.display());
+                self.workspace.status = format!(
+                    "{} changed while the edit was being prepared; request a fresh preview.",
+                    path.display()
+                );
                 return;
             }
             let proposed_contents = match apply_text_edits(&document.contents, &edits) {
                 Ok(contents) => contents,
                 Err(error) => {
-                    self.workspace.status = format!("Rust Analyzer returned unsafe edits for {}: {error}", path.display());
+                    self.workspace.status = format!(
+                        "Rust Analyzer returned unsafe edits for {}: {error}",
+                        path.display()
+                    );
                     return;
                 }
             };
             total_bytes = total_bytes.saturating_add(proposed_contents.len());
             if total_bytes > 4 * 1024 * 1024 {
-                self.workspace.status = "This edit preview exceeds 4 MiB; it was not prepared.".to_owned();
+                self.workspace.status =
+                    "This edit preview exceeds 4 MiB; it was not prepared.".to_owned();
                 return;
             }
             if proposed_contents != document.contents {
@@ -715,7 +808,8 @@ impl IdeApp {
         let preview_count = previews.len();
         self.semantic.edit_preview = None;
         self.semantic.workspace_edit_preview = Some(previews);
-        self.workspace.status = format!("Review the {preview_count} file edit preview before applying it.");
+        self.workspace.status =
+            format!("Review the {preview_count} file edit preview before applying it.");
     }
 
     pub(super) fn apply_edit_preview(&mut self) {
@@ -729,7 +823,9 @@ impl IdeApp {
         let version = match apply_versioned_edit(document, &preview) {
             Ok(version) => version,
             Err(EditPreviewApplyError::Stale) => {
-                self.workspace.status = "The file changed after preview; the edit was discarded. Preview it again.".to_owned();
+                self.workspace.status =
+                    "The file changed after preview; the edit was discarded. Preview it again."
+                        .to_owned();
                 return;
             }
             Err(EditPreviewApplyError::NoChange) => {
@@ -737,14 +833,22 @@ impl IdeApp {
                 return;
             }
             Err(EditPreviewApplyError::RevisionExhausted) => {
-                self.workspace.status = "The document revision is exhausted; the edit was not applied.".to_owned();
+                self.workspace.status =
+                    "The document revision is exhausted; the edit was not applied.".to_owned();
                 return;
             }
         };
-        self.editor.cursor_offset = self.editor.cursor_offset.min(preview.proposed_contents.chars().count());
-        self.editor.cursor_position = cursor_position(&preview.proposed_contents, self.editor.cursor_offset);
+        self.editor.cursor_offset = self
+            .editor
+            .cursor_offset
+            .min(preview.proposed_contents.chars().count());
+        self.editor.cursor_position =
+            cursor_position(&preview.proposed_contents, self.editor.cursor_offset);
         self.did_change_document(&preview.path, preview.proposed_contents, version);
-        self.workspace.status = format!("Applied formatting to {}. Save to write it to disk.", preview.path.display());
+        self.workspace.status = format!(
+            "Applied formatting to {}. Save to write it to disk.",
+            preview.path.display()
+        );
     }
 
     pub(super) fn apply_workspace_edit_preview(&mut self) {
@@ -754,18 +858,28 @@ impl IdeApp {
         let mut updates = Vec::with_capacity(previews.len());
         for preview in &previews {
             let Some(document) = self.editor.documents.get(&preview.path) else {
-                self.workspace.status = "A file closed before the edit could be applied; no files changed.".to_owned();
+                self.workspace.status =
+                    "A file closed before the edit could be applied; no files changed.".to_owned();
                 return;
             };
-            if document.version != preview.document_version || document.contents != preview.original_contents {
-                self.workspace.status = "A file changed after preview; no files changed. Prepare the edit again.".to_owned();
+            if document.version != preview.document_version
+                || document.contents != preview.original_contents
+            {
+                self.workspace.status =
+                    "A file changed after preview; no files changed. Prepare the edit again."
+                        .to_owned();
                 return;
             }
             let Some(version) = document.version.checked_add(1) else {
-                self.workspace.status = "A document revision is exhausted; no files changed.".to_owned();
+                self.workspace.status =
+                    "A document revision is exhausted; no files changed.".to_owned();
                 return;
             };
-            updates.push((preview.path.clone(), preview.proposed_contents.clone(), version));
+            updates.push((
+                preview.path.clone(),
+                preview.proposed_contents.clone(),
+                version,
+            ));
         }
         if updates.is_empty() {
             self.workspace.status = "The edit preview is empty.".to_owned();
@@ -784,7 +898,10 @@ impl IdeApp {
             }
             self.did_change_document(&path, contents, version);
         }
-        self.workspace.status = format!("Applied edits to {} open files. Save each changed file to write it to disk.", previews.len());
+        self.workspace.status = format!(
+            "Applied edits to {} open files. Save each changed file to write it to disk.",
+            previews.len()
+        );
     }
 
     pub(super) fn apply_completion(&mut self, context: &egui::Context, index: usize) {
@@ -854,13 +971,19 @@ impl IdeApp {
         let canonical_root = root.canonicalize().unwrap_or_else(|_| root.clone());
         let canonical_path = absolute_path.canonicalize().unwrap_or(absolute_path);
         let Ok(path) = canonical_path.strip_prefix(&canonical_root) else {
-            self.workspace.status = "Rust Analyzer returned a definition outside this workspace.".to_owned();
+            self.workspace.status =
+                "Rust Analyzer returned a definition outside this workspace.".to_owned();
             return;
         };
         self.navigate_to_workspace_location(path, line as usize, character as usize);
     }
 
-    pub(super) fn navigate_to_workspace_location(&mut self, path: &Path, line: usize, character: usize) {
+    pub(super) fn navigate_to_workspace_location(
+        &mut self,
+        path: &Path,
+        line: usize,
+        character: usize,
+    ) {
         let path = path.to_path_buf();
         self.editor.pending_navigation = Some((path.clone(), line, character));
         if self.editor.documents.contains_key(&path) {
@@ -870,9 +993,15 @@ impl IdeApp {
         }
     }
 
-    pub(super) fn index_local_semantic_document(&mut self, path: &Path, version: u64, source: &str) {
+    pub(super) fn index_local_semantic_document(
+        &mut self,
+        path: &Path,
+        version: u64,
+        source: &str,
+    ) {
         if source.len() > vapor_gui_core::semantic::MAX_SEMANTIC_DOCUMENT_BYTES {
-            self.semantic.index
+            self.semantic
+                .index
                 .replace_document(path.to_path_buf(), version, Vec::new());
             if let Some(root) = self.workspace.root.as_deref()
                 && let Some(relative_path) = relative_workspace_path(root, path)
@@ -890,69 +1019,59 @@ impl IdeApp {
         }
         let extension = path.extension().and_then(|extension| extension.to_str());
         let relative_path = self
-            .workspace.root.as_deref()
+            .workspace
+            .root
+            .as_deref()
             .and_then(|root| relative_workspace_path(root, path));
         match extension {
-            Some("toml") => {
-                match toml_semantics::parse_toml_semantic_objects(path, source) {
-                    Ok(objects) => {
-                        self.semantic.index
-                            .replace_document(path.to_path_buf(), version, objects);
-                        if let Some(relative_path) = relative_path {
-                            let mut diagnostics =
-                                toml_semantics::authored_manifest_diagnostics(path, source);
-                            if let Some(root) = self.workspace.root.as_deref() {
-                                attach_document_context(&mut diagnostics, root, version);
-                            }
-                            if diagnostics.is_empty() {
-                                self.semantic.problems.remove_source_diagnostics(
-                                    &relative_path,
-                                    vapor_gui_core::DiagnosticOrigin::Vapor,
-                                );
-                            } else {
-                                self.semantic.problems.replace_source_diagnostics(
-                                    relative_path,
-                                    vapor_gui_core::DiagnosticOrigin::Vapor,
-                                    diagnostics,
-                                );
-                            }
-                        }
+            Some("rs") => {
+                let parsed = rust_semantics::parse_local_rust_semantic_document(path, source);
+                let rust_semantics::ParsedSemanticDocument { objects, truncated } = parsed;
+                let symbol_count = objects.len();
+                if let Some(relative_path) = relative_path {
+                    let mut diagnostics = rust_semantics::convention_diagnostics(path, &objects);
+                    if let Some(root) = self.workspace.root.as_deref() {
+                        attach_document_context(&mut diagnostics, root, version);
                     }
-                    Err(error) => {
-                        self.semantic.index
-                            .replace_document(path.to_path_buf(), version, Vec::new());
-                        if let Some(relative_path) = relative_path {
-                            let mut diagnostics = vec![toml_parse_diagnostic(path, source, &error)];
-                            if let Some(root) = self.workspace.root.as_deref() {
-                                attach_document_context(&mut diagnostics, root, version);
-                            }
-                            self.semantic.problems.replace_source_diagnostics(
-                                relative_path,
-                                vapor_gui_core::DiagnosticOrigin::Vapor,
-                                diagnostics,
-                            );
-                        }
+                    if diagnostics.is_empty() {
+                        self.semantic.problems.remove_source_diagnostics(
+                            &relative_path,
+                            vapor_gui_core::DiagnosticOrigin::Vapor,
+                        );
+                    } else {
+                        self.semantic.problems.replace_source_diagnostics(
+                            relative_path,
+                            vapor_gui_core::DiagnosticOrigin::Vapor,
+                            diagnostics,
+                        );
                     }
                 }
+                self.semantic
+                    .index
+                    .replace_document(path.to_path_buf(), version, objects);
+                if truncated {
+                    self.workspace.status = format!(
+                        "Rust outline is partial at {symbol_count} objects; editing remains available."
+                    );
+                }
             }
-            Some("xml") => {
-                match xml_semantics::parse_xml_semantic_objects(path, source) {
-                    Ok(objects) => {
-                        self.semantic.index.replace_document(path.to_path_buf(), version, objects);
-                        if let Some(relative_path) = relative_path {
+            Some("toml") => match toml_semantics::parse_toml_semantic_objects(path, source) {
+                Ok(objects) => {
+                    self.semantic
+                        .index
+                        .replace_document(path.to_path_buf(), version, objects);
+                    if let Some(relative_path) = relative_path {
+                        let mut diagnostics =
+                            toml_semantics::authored_manifest_diagnostics(path, source);
+                        if let Some(root) = self.workspace.root.as_deref() {
+                            attach_document_context(&mut diagnostics, root, version);
+                        }
+                        if diagnostics.is_empty() {
                             self.semantic.problems.remove_source_diagnostics(
                                 &relative_path,
                                 vapor_gui_core::DiagnosticOrigin::Vapor,
                             );
-                        }
-                    }
-                    Err(error) => {
-                        self.semantic.index.replace_document(path.to_path_buf(), version, Vec::new());
-                        if let Some(relative_path) = relative_path {
-                            let mut diagnostics = vec![xml_parse_diagnostic(path, source, &error)];
-                            if let Some(root) = self.workspace.root.as_deref() {
-                                attach_document_context(&mut diagnostics, root, version);
-                            }
+                        } else {
                             self.semantic.problems.replace_source_diagnostics(
                                 relative_path,
                                 vapor_gui_core::DiagnosticOrigin::Vapor,
@@ -961,10 +1080,57 @@ impl IdeApp {
                         }
                     }
                 }
-            }
+                Err(error) => {
+                    self.semantic
+                        .index
+                        .replace_document(path.to_path_buf(), version, Vec::new());
+                    if let Some(relative_path) = relative_path {
+                        let mut diagnostics = vec![toml_parse_diagnostic(path, source, &error)];
+                        if let Some(root) = self.workspace.root.as_deref() {
+                            attach_document_context(&mut diagnostics, root, version);
+                        }
+                        self.semantic.problems.replace_source_diagnostics(
+                            relative_path,
+                            vapor_gui_core::DiagnosticOrigin::Vapor,
+                            diagnostics,
+                        );
+                    }
+                }
+            },
+            Some("xml") => match xml_semantics::parse_xml_semantic_objects(path, source) {
+                Ok(objects) => {
+                    self.semantic
+                        .index
+                        .replace_document(path.to_path_buf(), version, objects);
+                    if let Some(relative_path) = relative_path {
+                        self.semantic.problems.remove_source_diagnostics(
+                            &relative_path,
+                            vapor_gui_core::DiagnosticOrigin::Vapor,
+                        );
+                    }
+                }
+                Err(error) => {
+                    self.semantic
+                        .index
+                        .replace_document(path.to_path_buf(), version, Vec::new());
+                    if let Some(relative_path) = relative_path {
+                        let mut diagnostics = vec![xml_parse_diagnostic(path, source, &error)];
+                        if let Some(root) = self.workspace.root.as_deref() {
+                            attach_document_context(&mut diagnostics, root, version);
+                        }
+                        self.semantic.problems.replace_source_diagnostics(
+                            relative_path,
+                            vapor_gui_core::DiagnosticOrigin::Vapor,
+                            diagnostics,
+                        );
+                    }
+                }
+            },
             Some("rhai") => {
-                let objects = vapor_gui_core::rhai_semantics::parse_rhai_semantic_objects(path, source);
-                self.semantic.index
+                let objects =
+                    vapor_gui_core::rhai_semantics::parse_rhai_semantic_objects(path, source);
+                self.semantic
+                    .index
                     .replace_document(path.to_path_buf(), version, objects);
                 if let Some(relative_path) = relative_path {
                     let mut diagnostics =
@@ -1016,7 +1182,8 @@ impl IdeApp {
         let path = if path.is_absolute() {
             path.to_path_buf()
         } else {
-            self.workspace.root
+            self.workspace
+                .root
                 .as_ref()
                 .map_or_else(|| path.to_path_buf(), |root| root.join(path))
         };
@@ -1036,13 +1203,20 @@ impl IdeApp {
         {
             self.semantic.problems.remove_source_file(&relative_path);
         }
-        if let Some((document_version, contents)) = self.editor.documents
+        if let Some((document_version, contents)) = self
+            .editor
+            .documents
             .get(path)
             .map(|document| (document.version as u64, document.contents.clone()))
         {
             self.index_local_semantic_document(path, document_version, &contents);
         }
-        if self.semantic.selected.as_ref().is_some_and(|selected| &selected.id.document == path) {
+        if self
+            .semantic
+            .selected
+            .as_ref()
+            .is_some_and(|selected| &selected.id.document == path)
+        {
             self.semantic.selected = None;
             self.semantic.rename_target = None;
         }
@@ -1085,12 +1259,16 @@ impl IdeApp {
         }));
     }
 
-    pub(super) fn handle_language_server_diagnostics(&mut self, mut batch: LanguageServerDiagnostics) {
+    pub(super) fn handle_language_server_diagnostics(
+        &mut self,
+        mut batch: LanguageServerDiagnostics,
+    ) {
         let Some(path) = path_from_file_uri(&batch.uri) else {
             return;
         };
         if batch.version.is_some_and(|version| {
-            self.editor.documents
+            self.editor
+                .documents
                 .get(&path)
                 .is_some_and(|document| document.version != version)
         }) {
@@ -1109,7 +1287,11 @@ impl IdeApp {
             if let Some(version) = batch.version {
                 diagnostic.context.document_version = u64::try_from(version).ok();
             }
-            for span in diagnostic.primary.iter_mut().chain(diagnostic.related.iter_mut()) {
+            for span in diagnostic
+                .primary
+                .iter_mut()
+                .chain(diagnostic.related.iter_mut())
+            {
                 if let Some(path) = path_from_file_uri(&span.file) {
                     span.file = path.to_string_lossy().into_owned();
                 }
@@ -1176,15 +1358,12 @@ impl IdeApp {
             if request.request == LspRequest::WorkspaceSymbols {
                 if self.workspace.root.as_deref() == Some(request.path.as_path())
                     && request.query.as_deref() == Some(self.workspace.file_query.trim())
-                    && request
-                        .workspace_versions
-                        .as_ref()
-                        .is_some_and(|versions| workspace_versions_match(versions, &self.editor.documents))
+                    && request.workspace_versions.as_ref().is_some_and(|versions| {
+                        workspace_versions_match(versions, &self.editor.documents)
+                    })
                 {
-                    self.language_server.workspace_symbols = rust_semantics::parse_workspace_symbols(
-                        result,
-                        &request.path,
-                    );
+                    self.language_server.workspace_symbols =
+                        rust_semantics::parse_workspace_symbols(result, &request.path);
                     self.workspace.status = format!(
                         "Rust Analyzer found {} workspace symbols.",
                         self.language_server.workspace_symbols.len()
@@ -1202,7 +1381,8 @@ impl IdeApp {
                 self.language_server.code_actions = parse_edit_code_actions(result);
                 if self.language_server.code_actions.is_empty() {
                     self.language_server.code_action_request = None;
-                    self.workspace.status = "Rust Analyzer found no direct, reviewable quick fixes.".to_owned();
+                    self.workspace.status =
+                        "Rust Analyzer found no direct, reviewable quick fixes.".to_owned();
                 } else {
                     self.language_server.code_action_request = Some(request);
                     self.workspace.status = format!(
@@ -1212,7 +1392,12 @@ impl IdeApp {
                 }
                 return;
             }
-            if self.editor.documents.get(&request.path).is_none_or(|document| document.version != request.document_version) {
+            if self
+                .editor
+                .documents
+                .get(&request.path)
+                .is_none_or(|document| document.version != request.document_version)
+            {
                 return;
             }
             match request.request {
@@ -1226,22 +1411,28 @@ impl IdeApp {
                         self.editor.selected_file.as_ref(),
                         self.semantic.selected.as_ref(),
                     );
-                    let document_is_current = self.editor.documents
+                    let document_is_current = self
+                        .editor
+                        .documents
                         .get(&request.path)
                         .is_some_and(|document| document.version == request.document_version);
-                    let workspace_is_current = request
-                        .workspace_versions
-                        .as_ref()
-                        .is_some_and(|versions| workspace_versions_match(versions, &self.editor.documents));
+                    let workspace_is_current =
+                        request.workspace_versions.as_ref().is_some_and(|versions| {
+                            workspace_versions_match(versions, &self.editor.documents)
+                        });
                     if target_is_selected && document_is_current && workspace_is_current {
-                        (self.language_server.references, self.language_server.references_omitted) = self
-                            .workspace.root.as_deref()
-                            .map_or_else(|| (Vec::new(), 0), |root| reference_locations(result, root));
+                        (
+                            self.language_server.references,
+                            self.language_server.references_omitted,
+                        ) = self.workspace.root.as_deref().map_or_else(
+                            || (Vec::new(), 0),
+                            |root| reference_locations(result, root),
+                        );
                     }
                 }
                 LspRequest::Rename => {
-                    let target_is_selected = request.semantic_target.as_ref()
-                        == self.semantic.selected.as_ref();
+                    let target_is_selected =
+                        request.semantic_target.as_ref() == self.semantic.selected.as_ref();
                     if target_is_selected {
                         self.prepare_workspace_edit(&request, result);
                     }
@@ -1249,7 +1440,9 @@ impl IdeApp {
                 LspRequest::Hover if self.editor.selected_file.as_ref() == Some(&request.path) => {
                     self.language_server.hover = hover_text(result);
                 }
-                LspRequest::Completion if self.editor.selected_file.as_ref() == Some(&request.path) => {
+                LspRequest::Completion
+                    if self.editor.selected_file.as_ref() == Some(&request.path) =>
+                {
                     self.language_server.completion_items = completion_items(result);
                 }
                 LspRequest::Formatting => self.apply_lsp_formatting(&request.path, result),
@@ -1265,9 +1458,10 @@ impl IdeApp {
                         let symbol_count = parsed.objects.len();
                         let source_too_large = document.contents.len()
                             > vapor_gui_core::semantic::MAX_SEMANTIC_DOCUMENT_BYTES;
-                        if let Some(relative_path) = self
-                            .workspace.root.as_deref()
-                            .and_then(|workspace| relative_workspace_path(workspace, &request.path))
+                        if let Some(relative_path) =
+                            self.workspace.root.as_deref().and_then(|workspace| {
+                                relative_workspace_path(workspace, &request.path)
+                            })
                         {
                             let mut diagnostics = rust_semantics::convention_diagnostics(
                                 &request.path,
@@ -1305,7 +1499,9 @@ impl IdeApp {
                             self.workspace.status = if source_too_large {
                                 "Semantic indexing paused for this file because it exceeds 2 MiB; editing remains available.".to_owned()
                             } else {
-                                format!("Rust Analyzer returned a large document; indexed the first {symbol_count} semantic objects. Narrow the file or query to inspect the rest.")
+                                format!(
+                                    "Rust Analyzer returned a large document; indexed the first {symbol_count} semantic objects. Narrow the file or query to inspect the rest."
+                                )
                             };
                         }
                     }
@@ -1315,9 +1511,7 @@ impl IdeApp {
             }
             return;
         }
-
     }
-
 }
 
 pub(super) fn reference_request_matches_selection(

@@ -10,29 +10,31 @@ use std::{
 use vapor_client::{Client, ClientHostConfig, service_sibling_path};
 use vapor_client_protocol::{
     ClientAction, ClientEvent, LanguageServerAction, LanguageServerDiagnostics, OperationStatus,
-    ProtocolFrame,
-    WorkspaceAction, WorkspaceFileResult, WorkspaceProjectSelection, WorkspaceToolOperation,
+    ProtocolFrame, WorkspaceAction, WorkspaceFileResult, WorkspaceProjectSelection,
+    WorkspaceToolOperation,
 };
 use vapor_gui_core::semantic::{
     SemanticObject, SemanticObjectRef, SemanticRange, SemanticWorkspaceIndex,
 };
-use vapor_gui_core::workspace_tree::{WorkspaceFileTree, WorkspaceTreeEntry, WorkspaceTreeOrdering};
+use vapor_gui_core::workspace_tree::{
+    WorkspaceFileTree, WorkspaceTreeEntry, WorkspaceTreeOrdering,
+};
 use vapor_gui_core::{ConsoleLevel, ConsoleRecord};
 
 mod authoring;
-mod semantic_view;
-mod rust_semantics;
+mod console_view;
 mod diagnostics;
-mod toml_semantics;
-mod xml_semantics;
-mod language_server;
-mod workspace_view;
 mod editor_view;
 mod inspector_view;
-mod console_view;
-mod service_session;
-mod workspace_navigation;
+mod language_server;
 mod lsp_text;
+mod rust_semantics;
+mod semantic_view;
+mod service_session;
+mod toml_semantics;
+mod workspace_navigation;
+mod workspace_view;
+mod xml_semantics;
 
 use authoring::WorkspaceAuthoring;
 use diagnostics::{
@@ -40,30 +42,30 @@ use diagnostics::{
     operation_produces_build_diagnostics, semantic_source_limit_diagnostic,
     workspace_diagnostic_path,
 };
-use language_server::{LanguageServerCodeAction, LanguageServerRequest, LspRequest, PendingLspRequest};
-use lsp_text::{
-    apply_text_edits, completion_items, cursor_position, file_uri, find_matches,
-    hover_text, identifier_byte_range, lsp_position, path_from_file_uri,
-    position_to_byte_offset, reference_locations, relative_workspace_path,
-    rust_analyzer_client_capabilities, rust_analyzer_initialization_options,
-    semantic_object_byte_range,
-};
-use toml_semantics::toml_parse_diagnostic;
-use xml_semantics::xml_parse_diagnostic;
-use workspace_navigation::{
-    FileTreeView, canonical_rust_item_kind, document_tab_label, draw_file_tree,
-    reference_range, rust_crate_roots,
+use language_server::{
+    LanguageServerCodeAction, LanguageServerRequest, LspRequest, PendingLspRequest,
 };
 #[cfg(test)]
 use language_server::{
     pending_lsp_requests_for_cancellation, pending_request_snapshot_is_current,
-    reference_request_matches_selection,
-    workspace_versions_match,
+    reference_request_matches_selection, workspace_versions_match,
+};
+use lsp_text::{
+    apply_text_edits, completion_items, cursor_position, file_uri, find_matches, hover_text,
+    identifier_byte_range, lsp_position, path_from_file_uri, position_to_byte_offset,
+    reference_locations, relative_workspace_path, rust_analyzer_client_capabilities,
+    rust_analyzer_initialization_options, semantic_object_byte_range,
+};
+use toml_semantics::toml_parse_diagnostic;
+use workspace_navigation::{
+    FileTreeView, canonical_rust_item_kind, document_tab_label, draw_file_tree, reference_range,
+    rust_crate_roots,
 };
 #[cfg(test)]
 use workspace_navigation::{
     file_display_label, rust_label_parts, shortest_rust_label, workspace_tree_ordering,
 };
+use xml_semantics::xml_parse_diagnostic;
 
 #[derive(Clone)]
 struct Document {
@@ -100,13 +102,18 @@ fn apply_versioned_edit(
     document: &mut Document,
     preview: &VersionedEditPreview,
 ) -> Result<i32, EditPreviewApplyError> {
-    if document.version != preview.document_version || document.contents != preview.original_contents {
+    if document.version != preview.document_version
+        || document.contents != preview.original_contents
+    {
         return Err(EditPreviewApplyError::Stale);
     }
     if document.contents == preview.proposed_contents {
         return Err(EditPreviewApplyError::NoChange);
     }
-    let next_version = document.version.checked_add(1).ok_or(EditPreviewApplyError::RevisionExhausted)?;
+    let next_version = document
+        .version
+        .checked_add(1)
+        .ok_or(EditPreviewApplyError::RevisionExhausted)?;
     document.contents = preview.proposed_contents.clone();
     document.version = next_version;
     Ok(next_version)
@@ -208,7 +215,10 @@ struct EditorState {
 
 impl EditorState {
     fn new() -> Self {
-        Self { cursor_position: (1, 1), ..Self::default() }
+        Self {
+            cursor_position: (1, 1),
+            ..Self::default()
+        }
     }
 }
 
@@ -312,8 +322,6 @@ impl IdeApp {
         app.connect();
         app
     }
-
-
 }
 
 impl eframe::App for IdeApp {
@@ -544,7 +552,6 @@ fn nonempty_path(value: &str) -> Option<PathBuf> {
     let value = value.trim();
     (!value.is_empty()).then(|| PathBuf::from(value))
 }
-
 
 #[cfg(test)]
 mod tests;

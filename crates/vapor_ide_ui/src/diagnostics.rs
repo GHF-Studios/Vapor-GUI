@@ -1,6 +1,12 @@
-use std::{collections::BTreeMap, ops::Range, path::{Path, PathBuf}};
+use std::{
+    collections::BTreeMap,
+    ops::Range,
+    path::{Path, PathBuf},
+};
 
-use vapor_gui_core::{DiagnosticOrigin, DiagnosticSeverity, StructuredDiagnostic, semantic::SemanticRange};
+use vapor_gui_core::{
+    DiagnosticOrigin, DiagnosticSeverity, StructuredDiagnostic, semantic::SemanticRange,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ProblemRow {
@@ -146,8 +152,14 @@ impl ProblemStore {
             .flatten()
             .filter(|diagnostic| {
                 diagnostic.primary.as_ref().is_some_and(|span| {
-                    let start = (span.start_line.saturating_sub(1), span.start_column.saturating_sub(1));
-                    let end = (span.end_line.saturating_sub(1), span.end_column.saturating_sub(1));
+                    let start = (
+                        span.start_line.saturating_sub(1),
+                        span.start_column.saturating_sub(1),
+                    );
+                    let end = (
+                        span.end_line.saturating_sub(1),
+                        span.end_column.saturating_sub(1),
+                    );
                     let object_start = (range.start.line, range.start.character);
                     let object_end = (range.end.line, range.end.character);
                     if start == end {
@@ -182,13 +194,15 @@ impl ProblemStore {
             if next_offset > start && offset < end {
                 let local_start = start.saturating_sub(offset).min(diagnostics.len());
                 let local_end = end.saturating_sub(offset).min(diagnostics.len());
-                rows.extend(diagnostics[local_start..local_end].iter().map(|diagnostic| {
-                    ProblemRowRef {
-                        path: Some(path),
-                        action: None,
-                        diagnostic,
-                    }
-                }));
+                rows.extend(
+                    diagnostics[local_start..local_end]
+                        .iter()
+                        .map(|diagnostic| ProblemRowRef {
+                            path: Some(path),
+                            action: None,
+                            diagnostic,
+                        }),
+                );
             }
             offset = next_offset;
             if offset >= end {
@@ -197,11 +211,15 @@ impl ProblemStore {
         }
         let build_start = start.saturating_sub(offset).min(self.build.len());
         let build_end = end.saturating_sub(offset).min(self.build.len());
-        rows.extend(self.build[build_start..build_end].iter().map(|row| ProblemRowRef {
-            path: row.path.as_ref(),
-            action: row.action.as_deref(),
-            diagnostic: &row.diagnostic,
-        }));
+        rows.extend(
+            self.build[build_start..build_end]
+                .iter()
+                .map(|row| ProblemRowRef {
+                    path: row.path.as_ref(),
+                    action: row.action.as_deref(),
+                    diagnostic: &row.diagnostic,
+                }),
+        );
         offset = offset.saturating_add(self.build.len());
         if self.omitted_build_problems > 0 && start <= offset && end > offset {
             rows.push(ProblemRowRef {
@@ -255,15 +273,27 @@ mod tests {
         let overlapping = store.for_semantic_range(
             Path::new("src/components.rs"),
             SemanticRange {
-                start: SemanticPosition { line: 4, character: 0 },
-                end: SemanticPosition { line: 5, character: 2 },
+                start: SemanticPosition {
+                    line: 4,
+                    character: 0,
+                },
+                end: SemanticPosition {
+                    line: 5,
+                    character: 2,
+                },
             },
         );
         let outside = store.for_semantic_range(
             Path::new("src/components.rs"),
             SemanticRange {
-                start: SemanticPosition { line: 5, character: 10 },
-                end: SemanticPosition { line: 6, character: 0 },
+                start: SemanticPosition {
+                    line: 5,
+                    character: 10,
+                },
+                end: SemanticPosition {
+                    line: 6,
+                    character: 0,
+                },
             },
         );
 
@@ -275,9 +305,13 @@ mod tests {
 
 pub(super) fn truncate_diagnostic_payload(payload: &str) -> String {
     const MAX_BYTES: usize = 64 * 1024;
-    if payload.len() <= MAX_BYTES { return payload.to_owned(); }
+    if payload.len() <= MAX_BYTES {
+        return payload.to_owned();
+    }
     let mut end = MAX_BYTES;
-    while !payload.is_char_boundary(end) { end -= 1; }
+    while !payload.is_char_boundary(end) {
+        end -= 1;
+    }
     format!("{}…", &payload[..end])
 }
 
@@ -286,14 +320,19 @@ pub(super) fn workspace_diagnostic_path(
     diagnostic_file: &str,
     known_files: &[PathBuf],
 ) -> Option<PathBuf> {
-    let workspace = workspace.canonicalize().unwrap_or_else(|_| workspace.to_path_buf());
+    let workspace = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_path_buf());
     let path = Path::new(diagnostic_file);
     if diagnostic_file.trim().is_empty() || diagnostic_file.starts_with("file:") {
         return None;
     }
     if path.is_absolute() {
         let canonical = path.canonicalize().ok()?;
-        return canonical.strip_prefix(&workspace).ok().map(Path::to_path_buf);
+        return canonical
+            .strip_prefix(&workspace)
+            .ok()
+            .map(Path::to_path_buf);
     }
 
     // Cargo may report a package-relative path when the package is nested in
@@ -312,7 +351,10 @@ pub(super) fn workspace_diagnostic_path(
     }
 
     let canonical = workspace.join(path).canonicalize().ok()?;
-    canonical.strip_prefix(workspace).ok().map(Path::to_path_buf)
+    canonical
+        .strip_prefix(workspace)
+        .ok()
+        .map(Path::to_path_buf)
 }
 
 pub(super) fn operation_produces_build_diagnostics(action: &str) -> bool {
