@@ -49,7 +49,8 @@ use language_server::{
 #[cfg(test)]
 use language_server::{
     pending_lsp_requests_for_cancellation, pending_request_snapshot_is_current,
-    reference_request_matches_selection, workspace_versions_match,
+    reference_request_matches_selection, workspace_symbol_request_is_current,
+    workspace_versions_match,
 };
 use lsp_text::{
     apply_text_edits, completion_items, cursor_position, file_uri, find_matches, hover_text,
@@ -238,6 +239,7 @@ struct LanguageServerState {
     completion_items: Vec<CompletionItem>,
     workspace_symbols: Vec<SemanticObject>,
     workspace_symbol_query: Option<String>,
+    workspace_symbol_error: Option<String>,
     workspace_symbol_input_query: Option<String>,
     workspace_symbol_input_changed_at: Option<Instant>,
     code_actions: Vec<LanguageServerCodeAction>,
@@ -258,6 +260,7 @@ impl Default for LanguageServerState {
             completion_items: Vec::new(),
             workspace_symbols: Vec::new(),
             workspace_symbol_query: None,
+            workspace_symbol_error: None,
             workspace_symbol_input_query: None,
             workspace_symbol_input_changed_at: None,
             code_actions: Vec::new(),

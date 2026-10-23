@@ -93,6 +93,21 @@ pub(super) fn workspace_versions_match(
         })
 }
 
+pub(super) fn workspace_symbol_request_is_current(
+    request: &PendingLspRequest,
+    workspace_root: Option<&Path>,
+    query: &str,
+    documents: &BTreeMap<PathBuf, Document>,
+) -> bool {
+    request.request == LspRequest::WorkspaceSymbols
+        && workspace_root.is_some_and(|root| root == request.path)
+        && request.query.as_deref() == Some(query.trim())
+        && request
+            .workspace_versions
+            .as_ref()
+            .is_some_and(|versions| workspace_versions_match(versions, documents))
+}
+
 pub(super) fn pending_request_snapshot_is_current(
     request: &PendingLspRequest,
     documents: &BTreeMap<PathBuf, Document>,
@@ -137,6 +152,7 @@ impl IdeApp {
         self.language_server.completion_items.clear();
         self.language_server.workspace_symbols.clear();
         self.language_server.workspace_symbol_query = None;
+        self.language_server.workspace_symbol_error = None;
         self.language_server.workspace_symbol_input_query = None;
         self.language_server.workspace_symbol_input_changed_at = None;
         self.language_server.status = "Starting Vapor-managed Rust Analyzer...".to_owned();
@@ -398,6 +414,7 @@ impl IdeApp {
             self.language_server.workspace_symbol_input_query = next_input;
             self.language_server.workspace_symbol_input_changed_at = Some(Instant::now());
             self.language_server.workspace_symbol_query = None;
+            self.language_server.workspace_symbol_error = None;
             self.language_server.workspace_symbols.clear();
             self.cancel_workspace_symbol_requests();
             if query.is_empty() {
@@ -406,6 +423,7 @@ impl IdeApp {
         }
         if query.is_empty() {
             self.language_server.workspace_symbol_query = None;
+            self.language_server.workspace_symbol_error = None;
             self.language_server.workspace_symbols.clear();
             return;
         }
@@ -1436,30 +1454,69 @@ impl IdeApp {
             && let Some(request) = self.language_server.pending_requests.remove(&id)
         {
             if let Some(error) = message.get("error") {
-                self.workspace.status = error
+                let error = error
                     .get("message")
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("Rust Analyzer request failed")
                     .to_owned();
+                if request.request == LspRequest::WorkspaceSymbols {
+                    if workspace_symbol_request_is_current(
+                        &request,
+                        self.workspace.root.as_deref(),
+                        &self.workspace.file_query,
+                        &self.editor.documents,
+                    ) {
+                        self.language_server.workspace_symbols.clear();
+                        self.language_server.workspace_symbol_query = request.query.clone();
+                        self.language_server.workspace_symbol_error = Some(error.clone());
+                        self.workspace.status =
+                            format!("Rust Analyzer workspace search failed: {error}");
+                    } else if request.query.as_deref() == Some(self.workspace.file_query.trim()) {
+                        self.language_server.workspace_symbols.clear();
+                        self.language_server.workspace_symbol_query = None;
+                        self.language_server.workspace_symbol_error = None;
+                        self.workspace.status =
+                            "Workspace files changed during search; refreshing results.".to_owned();
+                    }
+                    return;
+                }
+                if request.request == LspRequest::DocumentSymbols
+                    && self
+                        .semantic
+                        .pending_workspace_symbol
+                        .as_ref()
+                        .is_some_and(|symbol| {
+                            same_existing_workspace_path(&symbol.id.document, &request.path)
+                        })
+                {
+                    self.semantic.pending_workspace_symbol = None;
+                    self.workspace.status =
+                        format!("Could not inspect the workspace search result: {error}");
+                    return;
+                }
+                self.workspace.status = error;
                 return;
             }
             let Some(result) = message.get("result") else {
                 return;
             };
             if request.request == LspRequest::WorkspaceSymbols {
-                if self.workspace.root.as_deref() == Some(request.path.as_path())
-                    && request.query.as_deref() == Some(self.workspace.file_query.trim())
-                    && request.workspace_versions.as_ref().is_some_and(|versions| {
-                        workspace_versions_match(versions, &self.editor.documents)
-                    })
-                {
+                if workspace_symbol_request_is_current(
+                    &request,
+                    self.workspace.root.as_deref(),
+                    &self.workspace.file_query,
+                    &self.editor.documents,
+                ) {
                     self.language_server.workspace_symbols =
                         rust_semantics::parse_workspace_symbols(result, &request.path);
+                    self.language_server.workspace_symbol_error = None;
                     self.workspace.status = format!(
                         "Rust Analyzer found {} workspace symbols.",
                         self.language_server.workspace_symbols.len()
                     );
                 } else if request.query.as_deref() == Some(self.workspace.file_query.trim()) {
+                    self.language_server.workspace_symbols.clear();
+                    self.language_server.workspace_symbol_query = None;
                     self.workspace.status = "Open files changed during symbol search; search again for current results.".to_owned();
                 }
                 return;

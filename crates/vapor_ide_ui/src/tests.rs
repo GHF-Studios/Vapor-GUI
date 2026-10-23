@@ -12,8 +12,8 @@ use super::{
     relative_workspace_path, rust_analyzer_client_capabilities,
     rust_analyzer_initialization_options, rust_crate_roots, rust_label_parts,
     semantic_object_byte_range, semantic_source_limit_diagnostic, shortest_rust_label,
-    toml_parse_diagnostic, workspace_diagnostic_path, workspace_tree_ordering,
-    workspace_versions_match,
+    toml_parse_diagnostic, workspace_diagnostic_path, workspace_symbol_request_is_current,
+    workspace_tree_ordering, workspace_versions_match,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -1350,6 +1350,55 @@ fn large_rust_files_disable_semantic_expansion_without_losing_editing_diagnostic
     );
     assert!(diagnostic.message.contains("editing remains available"));
     assert!(diagnostic.raw_payload.len() < 256);
+}
+
+#[test]
+fn workspace_symbol_responses_require_the_current_root_query_and_document_revisions() {
+    let root = PathBuf::from("/fixture/workspace");
+    let mut documents = BTreeMap::from([(
+        PathBuf::from("src/lib.rs"),
+        Document {
+            contents: String::new(),
+            fingerprint: String::new(),
+            saved_contents: String::new(),
+            version: 4,
+        },
+    )]);
+    let request = super::PendingLspRequest {
+        request: super::LspRequest::WorkspaceSymbols,
+        path: root.clone(),
+        document_version: 0,
+        semantic_target: None,
+        cursor_offset: None,
+        workspace_versions: Some(BTreeMap::from([(PathBuf::from("src/lib.rs"), 4)])),
+        query: Some("Ship".to_owned()),
+    };
+
+    assert!(workspace_symbol_request_is_current(
+        &request,
+        Some(&root),
+        " Ship ",
+        &documents,
+    ));
+    assert!(!workspace_symbol_request_is_current(
+        &request,
+        Some(Path::new("/fixture/other")),
+        "Ship",
+        &documents,
+    ));
+    assert!(!workspace_symbol_request_is_current(
+        &request,
+        Some(&root),
+        "Dock",
+        &documents,
+    ));
+    documents.get_mut(Path::new("src/lib.rs")).unwrap().version += 1;
+    assert!(!workspace_symbol_request_is_current(
+        &request,
+        Some(&root),
+        "Ship",
+        &documents,
+    ));
 }
 
 #[test]

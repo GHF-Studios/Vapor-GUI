@@ -520,6 +520,11 @@ impl IdeApp {
                             != Some(self.workspace.file_query.trim())
                         {
                             ui.weak("Searching workspace symbols…");
+                        } else if let Some(error) = &self.language_server.workspace_symbol_error {
+                            ui.colored_label(
+                                egui::Color32::LIGHT_RED,
+                                format!("Workspace symbol search failed: {error}"),
+                            );
                         } else if self.language_server.workspace_symbols.is_empty() {
                             ui.weak("No workspace symbols match this search.");
                         }

@@ -69,6 +69,7 @@ impl IdeApp {
         self.semantic.pending_workspace_symbol = None;
         self.language_server.workspace_symbols.clear();
         self.language_server.workspace_symbol_query = None;
+        self.language_server.workspace_symbol_error = None;
         self.language_server.code_actions.clear();
         self.language_server.code_action_request = None;
         self.send(
