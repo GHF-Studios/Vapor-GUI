@@ -756,6 +756,19 @@ mod tests {
     }
 
     #[test]
+    fn parser_diagnostic_columns_are_mapped_after_unicode_on_the_same_line() {
+        let source = "let rocket = \"🚀\"; let speed = ;";
+        let diagnostic = super::rhai_structure_diagnostics(Path::new("main.rhai"), source)
+            .into_iter()
+            .find(|diagnostic| diagnostic.code.as_deref() == Some("rhai.parse"))
+            .expect("Rhai parser diagnostic");
+        let span = diagnostic.primary.expect("parser source location");
+
+        assert_eq!(span.start_line, 1);
+        assert_eq!(span.start_column, 32);
+    }
+
+    #[test]
     fn parser_does_not_duplicate_a_precise_delimiter_diagnostic() {
         let diagnostics =
             super::rhai_structure_diagnostics(Path::new("main.rhai"), "fn launch() { ] }");
