@@ -211,7 +211,7 @@ impl IdeApp {
             .semantic
             .selected
             .as_ref()
-            .is_some_and(|selected| &selected.id.document == path)
+            .is_some_and(|selected| selected.id.document == path)
         {
             self.semantic.selected = None;
         }

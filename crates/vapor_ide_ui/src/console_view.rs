@@ -108,10 +108,10 @@ impl IdeApp {
                             let response = response.on_hover_ui(|ui| {
                                 ui.label(diagnostic_details(diagnostic));
                             });
-                            if response.clicked() {
-                                if let Some(path) = &target_path {
-                                    selected_diagnostic = Some((path.clone(), line, column));
-                                }
+                            if response.clicked()
+                                && let Some(path) = &target_path
+                            {
+                                selected_diagnostic = Some((path.clone(), line, column));
                             }
                             if has_quick_fix
                                 && let Some(path) = path

@@ -516,495 +516,23 @@ pub(super) fn parse_local_rust_semantic_document(
         Some("run_conditions") => Some(SemanticObjectKind::RunCondition),
         _ => None,
     };
-    let mut remaining = DOCUMENT_SYMBOL_LIMIT;
-    let mut truncated = false;
-    let objects = local_rust_items(
-        &file.items,
-        document,
-        source,
-        &[],
-        system_file_kind,
-        0,
-        &mut remaining,
-        &mut truncated,
-    );
-    ParsedSemanticDocument { objects, truncated }
+    let mut projection = LocalRustProjection::new(document, source, system_file_kind);
+    let objects = projection.items(&file.items, &[], 0);
+    ParsedSemanticDocument {
+        objects,
+        truncated: projection.truncated,
+    }
 }
 
-fn local_rust_items(
-    items: &[syn::Item],
-    document: &Path,
-    source: &str,
-    parent_path: &[String],
+struct LocalRustProjection<'a> {
+    document: &'a Path,
+    source: &'a str,
     system_file_kind: Option<SemanticObjectKind>,
-    depth: usize,
-    remaining: &mut usize,
-    truncated: &mut bool,
-) -> Vec<SemanticObject> {
-    let mut objects = Vec::new();
-    for item in items {
-        if *remaining == 0 {
-            *truncated = true;
-            break;
-        }
-        if depth >= DOCUMENT_SYMBOL_DEPTH_LIMIT {
-            *truncated = true;
-            break;
-        }
-        *remaining -= 1;
-        let object = match item {
-            syn::Item::Struct(item) => {
-                let kind = derive_kind(&item.attrs).unwrap_or(SemanticObjectKind::Struct);
-                let name = item.ident.to_string();
-                let mut item_path = parent_path.to_vec();
-                item_path.push(name.clone());
-                let children = local_struct_fields(
-                    &item.fields,
-                    document,
-                    source,
-                    &item_path,
-                    remaining,
-                    truncated,
-                );
-                local_rust_object(
-                    document,
-                    source,
-                    parent_path,
-                    name,
-                    kind,
-                    None,
-                    item.span(),
-                    item.ident.span(),
-                    compact_attributes(&item.attrs),
-                    children,
-                )
-            }
-            syn::Item::Enum(item) => {
-                let name = item.ident.to_string();
-                let mut item_path = parent_path.to_vec();
-                item_path.push(name.clone());
-                let mut children = Vec::new();
-                for variant in &item.variants {
-                    if *remaining == 0 {
-                        *truncated = true;
-                        break;
-                    }
-                    *remaining -= 1;
-                    let variant_name = variant.ident.to_string();
-                    let mut variant_path = item_path.clone();
-                    variant_path.push(variant_name.clone());
-                    let fields = local_struct_fields(
-                        &variant.fields,
-                        document,
-                        source,
-                        &variant_path,
-                        remaining,
-                        truncated,
-                    );
-                    children.push(local_rust_object(
-                        document,
-                        source,
-                        &item_path,
-                        variant_name,
-                        SemanticObjectKind::Variant,
-                        None,
-                        variant.span(),
-                        variant.ident.span(),
-                        compact_attributes(&variant.attrs),
-                        fields,
-                    ));
-                }
-                local_rust_object(
-                    document,
-                    source,
-                    parent_path,
-                    name,
-                    SemanticObjectKind::Enum,
-                    None,
-                    item.span(),
-                    item.ident.span(),
-                    compact_attributes(&item.attrs),
-                    children,
-                )
-            }
-            syn::Item::Trait(item) => {
-                let name = item.ident.to_string();
-                let mut item_path = parent_path.to_vec();
-                item_path.push(name.clone());
-                let children = local_trait_items(
-                    &item.items,
-                    document,
-                    source,
-                    &item_path,
-                    remaining,
-                    truncated,
-                );
-                local_rust_object(
-                    document,
-                    source,
-                    parent_path,
-                    name,
-                    SemanticObjectKind::Trait,
-                    None,
-                    item.span(),
-                    item.ident.span(),
-                    compact_attributes(&item.attrs),
-                    children,
-                )
-            }
-            syn::Item::Impl(item) => {
-                let name = format!(
-                    "impl {}",
-                    compact_rust_tokens(item.self_ty.to_token_stream())
-                );
-                let mut path = parent_path.to_vec();
-                path.push(name.clone());
-                let children =
-                    local_impl_items(&item.items, document, source, &path, remaining, truncated);
-                local_rust_object(
-                    document,
-                    source,
-                    parent_path,
-                    name,
-                    SemanticObjectKind::Module,
-                    None,
-                    item.span(),
-                    item.self_ty.span(),
-                    compact_attributes(&item.attrs),
-                    children,
-                )
-            }
-            syn::Item::Mod(item) => {
-                let mut path = parent_path.to_vec();
-                path.push(item.ident.to_string());
-                let children = item.content.as_ref().map_or_else(Vec::new, |(_, items)| {
-                    local_rust_items(
-                        items,
-                        document,
-                        source,
-                        &path,
-                        system_file_kind,
-                        depth + 1,
-                        remaining,
-                        truncated,
-                    )
-                });
-                local_rust_object(
-                    document,
-                    source,
-                    parent_path,
-                    item.ident.to_string(),
-                    SemanticObjectKind::Module,
-                    None,
-                    item.span(),
-                    item.ident.span(),
-                    compact_attributes(&item.attrs),
-                    children,
-                )
-            }
-            syn::Item::Fn(item) => local_function_object(
-                document,
-                source,
-                parent_path,
-                &item.sig,
-                item.span(),
-                &item.attrs,
-                system_file_kind.unwrap_or(SemanticObjectKind::Function),
-                remaining,
-                truncated,
-            ),
-            syn::Item::Type(item) => local_rust_object(
-                document,
-                source,
-                parent_path,
-                item.ident.to_string(),
-                SemanticObjectKind::TypeAlias,
-                Some(compact_rust_tokens(item.ty.to_token_stream())),
-                item.span(),
-                item.ident.span(),
-                compact_attributes(&item.attrs),
-                Vec::new(),
-            ),
-            syn::Item::Const(item) => local_rust_object(
-                document,
-                source,
-                parent_path,
-                item.ident.to_string(),
-                SemanticObjectKind::Constant,
-                Some(compact_rust_tokens(item.ty.to_token_stream())),
-                item.span(),
-                item.ident.span(),
-                compact_attributes(&item.attrs),
-                Vec::new(),
-            ),
-            syn::Item::Static(item) => local_rust_object(
-                document,
-                source,
-                parent_path,
-                item.ident.to_string(),
-                SemanticObjectKind::Static,
-                Some(compact_rust_tokens(item.ty.to_token_stream())),
-                item.span(),
-                item.ident.span(),
-                compact_attributes(&item.attrs),
-                Vec::new(),
-            ),
-            syn::Item::Macro(item) => local_rust_object(
-                document,
-                source,
-                parent_path,
-                item.mac.path.to_token_stream().to_string(),
-                SemanticObjectKind::Macro,
-                None,
-                item.span(),
-                item.mac.path.span(),
-                compact_attributes(&item.attrs),
-                Vec::new(),
-            ),
-            _ => {
-                *remaining += 1;
-                continue;
-            }
-        };
-        objects.push(object);
-        if *remaining == 0 && objects.len() < items.len() {
-            *truncated = true;
-            break;
-        }
-    }
-    objects
+    remaining: usize,
+    truncated: bool,
 }
 
-fn local_struct_fields(
-    fields: &syn::Fields,
-    document: &Path,
-    source: &str,
-    parent_path: &[String],
-    remaining: &mut usize,
-    truncated: &mut bool,
-) -> Vec<SemanticObject> {
-    let mut output = Vec::new();
-    for (index, field) in fields.iter().enumerate() {
-        if *remaining == 0 {
-            *truncated = true;
-            break;
-        }
-        *remaining -= 1;
-        let name = field
-            .ident
-            .as_ref()
-            .map_or_else(|| index.to_string(), ToString::to_string);
-        let selection_span = field
-            .ident
-            .as_ref()
-            .map_or_else(|| field.ty.span(), Spanned::span);
-        output.push(local_rust_object(
-            document,
-            source,
-            parent_path,
-            name,
-            SemanticObjectKind::Field,
-            Some(compact_rust_tokens(field.ty.to_token_stream())),
-            field.span(),
-            selection_span,
-            compact_attributes(&field.attrs),
-            Vec::new(),
-        ));
-    }
-    output
-}
-
-fn local_trait_items(
-    items: &[syn::TraitItem],
-    document: &Path,
-    source: &str,
-    parent_path: &[String],
-    remaining: &mut usize,
-    truncated: &mut bool,
-) -> Vec<SemanticObject> {
-    let mut output = Vec::new();
-    for item in items {
-        if *remaining == 0 {
-            *truncated = true;
-            break;
-        }
-        *remaining -= 1;
-        let object = match item {
-            syn::TraitItem::Fn(item) => Some(local_function_object(
-                document,
-                source,
-                parent_path,
-                &item.sig,
-                item.span(),
-                &item.attrs,
-                SemanticObjectKind::Method,
-                remaining,
-                truncated,
-            )),
-            syn::TraitItem::Type(item) => Some(local_rust_object(
-                document,
-                source,
-                parent_path,
-                item.ident.to_string(),
-                SemanticObjectKind::TypeAlias,
-                None,
-                item.span(),
-                item.ident.span(),
-                compact_attributes(&item.attrs),
-                Vec::new(),
-            )),
-            syn::TraitItem::Const(item) => Some(local_rust_object(
-                document,
-                source,
-                parent_path,
-                item.ident.to_string(),
-                SemanticObjectKind::Constant,
-                Some(compact_rust_tokens(item.ty.to_token_stream())),
-                item.span(),
-                item.ident.span(),
-                compact_attributes(&item.attrs),
-                Vec::new(),
-            )),
-            _ => {
-                *remaining += 1;
-                None
-            }
-        };
-        if let Some(object) = object {
-            output.push(object);
-        }
-    }
-    output
-}
-
-fn local_impl_items(
-    items: &[syn::ImplItem],
-    document: &Path,
-    source: &str,
-    parent_path: &[String],
-    remaining: &mut usize,
-    truncated: &mut bool,
-) -> Vec<SemanticObject> {
-    let mut output = Vec::new();
-    for item in items {
-        if *remaining == 0 {
-            *truncated = true;
-            break;
-        }
-        *remaining -= 1;
-        let object = match item {
-            syn::ImplItem::Fn(item) => Some(local_function_object(
-                document,
-                source,
-                parent_path,
-                &item.sig,
-                item.span(),
-                &item.attrs,
-                SemanticObjectKind::Method,
-                remaining,
-                truncated,
-            )),
-            syn::ImplItem::Type(item) => Some(local_rust_object(
-                document,
-                source,
-                parent_path,
-                item.ident.to_string(),
-                SemanticObjectKind::TypeAlias,
-                Some(compact_rust_tokens(item.ty.to_token_stream())),
-                item.span(),
-                item.ident.span(),
-                compact_attributes(&item.attrs),
-                Vec::new(),
-            )),
-            syn::ImplItem::Const(item) => Some(local_rust_object(
-                document,
-                source,
-                parent_path,
-                item.ident.to_string(),
-                SemanticObjectKind::Constant,
-                Some(compact_rust_tokens(item.ty.to_token_stream())),
-                item.span(),
-                item.ident.span(),
-                compact_attributes(&item.attrs),
-                Vec::new(),
-            )),
-            _ => {
-                *remaining += 1;
-                None
-            }
-        };
-        if let Some(object) = object {
-            output.push(object);
-        }
-    }
-    output
-}
-
-fn local_function_object(
-    document: &Path,
-    source: &str,
-    parent_path: &[String],
-    signature: &syn::Signature,
-    full_span: Span,
-    attributes: &[syn::Attribute],
-    kind: SemanticObjectKind,
-    remaining: &mut usize,
-    truncated: &mut bool,
-) -> SemanticObject {
-    let mut function_path = parent_path.to_vec();
-    function_path.push(signature.ident.to_string());
-    let mut children = Vec::new();
-    for (index, argument) in signature.inputs.iter().enumerate() {
-        if *remaining == 0 {
-            *truncated = true;
-            break;
-        }
-        *remaining -= 1;
-        let (name, detail, selection_span, attributes) = match argument {
-            syn::FnArg::Receiver(receiver) => (
-                "self".to_owned(),
-                compact_rust_tokens(receiver.to_token_stream()),
-                receiver.self_token.span(),
-                Vec::new(),
-            ),
-            syn::FnArg::Typed(argument) => (
-                compact_rust_tokens(argument.pat.to_token_stream()),
-                compact_rust_tokens(argument.ty.to_token_stream()),
-                argument.pat.span(),
-                compact_attributes(&argument.attrs),
-            ),
-        };
-        children.push(local_rust_object(
-            document,
-            source,
-            &function_path,
-            format!("{name}#{index}"),
-            SemanticObjectKind::Parameter,
-            Some(detail),
-            argument.span(),
-            selection_span,
-            attributes,
-            Vec::new(),
-        ));
-    }
-    local_rust_object(
-        document,
-        source,
-        parent_path,
-        signature.ident.to_string(),
-        kind,
-        None,
-        full_span,
-        signature.ident.span(),
-        compact_attributes(attributes),
-        children,
-    )
-}
-
-fn local_rust_object(
-    document: &Path,
-    source: &str,
-    parent_path: &[String],
+struct RustSemanticObject {
     name: String,
     kind: SemanticObjectKind,
     detail: Option<String>,
@@ -1012,26 +540,453 @@ fn local_rust_object(
     selection_span: Span,
     attributes: Vec<String>,
     children: Vec<SemanticObject>,
-) -> SemanticObject {
-    let range = span_semantic_range(source, full_span);
-    let selection_range = span_semantic_range(source, selection_span);
-    let mut path = parent_path.to_vec();
-    path.push(name.clone());
-    let discriminator = format!(
-        "{}:{}:{}",
-        selection_range.start.line,
-        selection_range.start.character,
-        kind.label()
-    );
-    SemanticObject {
-        id: SemanticObjectId::with_discriminator("rust", document, path, discriminator),
-        kind,
-        name,
-        detail,
-        range,
-        selection_range,
-        attributes,
-        children,
+}
+
+impl<'a> LocalRustProjection<'a> {
+    fn new(
+        document: &'a Path,
+        source: &'a str,
+        system_file_kind: Option<SemanticObjectKind>,
+    ) -> Self {
+        Self {
+            document,
+            source,
+            system_file_kind,
+            remaining: DOCUMENT_SYMBOL_LIMIT,
+            truncated: false,
+        }
+    }
+
+    fn items(
+        &mut self,
+        items: &[syn::Item],
+        parent_path: &[String],
+        depth: usize,
+    ) -> Vec<SemanticObject> {
+        let mut objects = Vec::new();
+        for item in items {
+            if self.remaining == 0 {
+                self.truncated = true;
+                break;
+            }
+            if depth >= DOCUMENT_SYMBOL_DEPTH_LIMIT {
+                self.truncated = true;
+                break;
+            }
+            self.remaining -= 1;
+            let object = match item {
+                syn::Item::Struct(item) => {
+                    let kind = derive_kind(&item.attrs).unwrap_or(SemanticObjectKind::Struct);
+                    let name = item.ident.to_string();
+                    let mut item_path = parent_path.to_vec();
+                    item_path.push(name.clone());
+                    let children = self.fields(&item.fields, &item_path);
+                    self.object(
+                        parent_path,
+                        RustSemanticObject {
+                            name,
+                            kind,
+                            detail: None,
+                            full_span: item.span(),
+                            selection_span: item.ident.span(),
+                            attributes: compact_attributes(&item.attrs),
+                            children,
+                        },
+                    )
+                }
+                syn::Item::Enum(item) => {
+                    let name = item.ident.to_string();
+                    let mut item_path = parent_path.to_vec();
+                    item_path.push(name.clone());
+                    let mut children = Vec::new();
+                    for variant in &item.variants {
+                        if self.remaining == 0 {
+                            self.truncated = true;
+                            break;
+                        }
+                        self.remaining -= 1;
+                        let variant_name = variant.ident.to_string();
+                        let mut variant_path = item_path.clone();
+                        variant_path.push(variant_name.clone());
+                        let fields = self.fields(&variant.fields, &variant_path);
+                        children.push(self.object(
+                            &item_path,
+                            RustSemanticObject {
+                                name: variant_name,
+                                kind: SemanticObjectKind::Variant,
+                                detail: None,
+                                full_span: variant.span(),
+                                selection_span: variant.ident.span(),
+                                attributes: compact_attributes(&variant.attrs),
+                                children: fields,
+                            },
+                        ));
+                    }
+                    self.object(
+                        parent_path,
+                        RustSemanticObject {
+                            name,
+                            kind: SemanticObjectKind::Enum,
+                            detail: None,
+                            full_span: item.span(),
+                            selection_span: item.ident.span(),
+                            attributes: compact_attributes(&item.attrs),
+                            children,
+                        },
+                    )
+                }
+                syn::Item::Trait(item) => {
+                    let name = item.ident.to_string();
+                    let mut item_path = parent_path.to_vec();
+                    item_path.push(name.clone());
+                    let children = self.trait_items(&item.items, &item_path);
+                    self.object(
+                        parent_path,
+                        RustSemanticObject {
+                            name,
+                            kind: SemanticObjectKind::Trait,
+                            detail: None,
+                            full_span: item.span(),
+                            selection_span: item.ident.span(),
+                            attributes: compact_attributes(&item.attrs),
+                            children,
+                        },
+                    )
+                }
+                syn::Item::Impl(item) => {
+                    let name = format!(
+                        "impl {}",
+                        compact_rust_tokens(item.self_ty.to_token_stream())
+                    );
+                    let mut path = parent_path.to_vec();
+                    path.push(name.clone());
+                    let children = self.impl_items(&item.items, &path);
+                    self.object(
+                        parent_path,
+                        RustSemanticObject {
+                            name,
+                            kind: SemanticObjectKind::Module,
+                            detail: None,
+                            full_span: item.span(),
+                            selection_span: item.self_ty.span(),
+                            attributes: compact_attributes(&item.attrs),
+                            children,
+                        },
+                    )
+                }
+                syn::Item::Mod(item) => {
+                    let mut path = parent_path.to_vec();
+                    path.push(item.ident.to_string());
+                    let children = item
+                        .content
+                        .as_ref()
+                        .map_or_else(Vec::new, |(_, items)| self.items(items, &path, depth + 1));
+                    self.object(
+                        parent_path,
+                        RustSemanticObject {
+                            name: item.ident.to_string(),
+                            kind: SemanticObjectKind::Module,
+                            detail: None,
+                            full_span: item.span(),
+                            selection_span: item.ident.span(),
+                            attributes: compact_attributes(&item.attrs),
+                            children,
+                        },
+                    )
+                }
+                syn::Item::Fn(item) => self.function(
+                    parent_path,
+                    &item.sig,
+                    item.span(),
+                    &item.attrs,
+                    self.system_file_kind
+                        .unwrap_or(SemanticObjectKind::Function),
+                ),
+                syn::Item::Type(item) => self.object(
+                    parent_path,
+                    RustSemanticObject {
+                        name: item.ident.to_string(),
+                        kind: SemanticObjectKind::TypeAlias,
+                        detail: Some(compact_rust_tokens(item.ty.to_token_stream())),
+                        full_span: item.span(),
+                        selection_span: item.ident.span(),
+                        attributes: compact_attributes(&item.attrs),
+                        children: Vec::new(),
+                    },
+                ),
+                syn::Item::Const(item) => self.object(
+                    parent_path,
+                    RustSemanticObject {
+                        name: item.ident.to_string(),
+                        kind: SemanticObjectKind::Constant,
+                        detail: Some(compact_rust_tokens(item.ty.to_token_stream())),
+                        full_span: item.span(),
+                        selection_span: item.ident.span(),
+                        attributes: compact_attributes(&item.attrs),
+                        children: Vec::new(),
+                    },
+                ),
+                syn::Item::Static(item) => self.object(
+                    parent_path,
+                    RustSemanticObject {
+                        name: item.ident.to_string(),
+                        kind: SemanticObjectKind::Static,
+                        detail: Some(compact_rust_tokens(item.ty.to_token_stream())),
+                        full_span: item.span(),
+                        selection_span: item.ident.span(),
+                        attributes: compact_attributes(&item.attrs),
+                        children: Vec::new(),
+                    },
+                ),
+                syn::Item::Macro(item) => self.object(
+                    parent_path,
+                    RustSemanticObject {
+                        name: item.mac.path.to_token_stream().to_string(),
+                        kind: SemanticObjectKind::Macro,
+                        detail: None,
+                        full_span: item.span(),
+                        selection_span: item.mac.path.span(),
+                        attributes: compact_attributes(&item.attrs),
+                        children: Vec::new(),
+                    },
+                ),
+                _ => {
+                    self.remaining += 1;
+                    continue;
+                }
+            };
+            objects.push(object);
+            if self.remaining == 0 && objects.len() < items.len() {
+                self.truncated = true;
+                break;
+            }
+        }
+        objects
+    }
+
+    fn fields(&mut self, fields: &syn::Fields, parent_path: &[String]) -> Vec<SemanticObject> {
+        let mut output = Vec::new();
+        for (index, field) in fields.iter().enumerate() {
+            if self.remaining == 0 {
+                self.truncated = true;
+                break;
+            }
+            self.remaining -= 1;
+            let name = field
+                .ident
+                .as_ref()
+                .map_or_else(|| index.to_string(), ToString::to_string);
+            let selection_span = field
+                .ident
+                .as_ref()
+                .map_or_else(|| field.ty.span(), Spanned::span);
+            output.push(self.object(
+                parent_path,
+                RustSemanticObject {
+                    name,
+                    kind: SemanticObjectKind::Field,
+                    detail: Some(compact_rust_tokens(field.ty.to_token_stream())),
+                    full_span: field.span(),
+                    selection_span,
+                    attributes: compact_attributes(&field.attrs),
+                    children: Vec::new(),
+                },
+            ));
+        }
+        output
+    }
+
+    fn trait_items(
+        &mut self,
+        items: &[syn::TraitItem],
+        parent_path: &[String],
+    ) -> Vec<SemanticObject> {
+        let mut output = Vec::new();
+        for item in items {
+            if self.remaining == 0 {
+                self.truncated = true;
+                break;
+            }
+            self.remaining -= 1;
+            let object = match item {
+                syn::TraitItem::Fn(item) => Some(self.function(
+                    parent_path,
+                    &item.sig,
+                    item.span(),
+                    &item.attrs,
+                    SemanticObjectKind::Method,
+                )),
+                syn::TraitItem::Type(item) => Some(self.object(
+                    parent_path,
+                    RustSemanticObject {
+                        name: item.ident.to_string(),
+                        kind: SemanticObjectKind::TypeAlias,
+                        detail: None,
+                        full_span: item.span(),
+                        selection_span: item.ident.span(),
+                        attributes: compact_attributes(&item.attrs),
+                        children: Vec::new(),
+                    },
+                )),
+                syn::TraitItem::Const(item) => Some(self.object(
+                    parent_path,
+                    RustSemanticObject {
+                        name: item.ident.to_string(),
+                        kind: SemanticObjectKind::Constant,
+                        detail: Some(compact_rust_tokens(item.ty.to_token_stream())),
+                        full_span: item.span(),
+                        selection_span: item.ident.span(),
+                        attributes: compact_attributes(&item.attrs),
+                        children: Vec::new(),
+                    },
+                )),
+                _ => {
+                    self.remaining += 1;
+                    None
+                }
+            };
+            if let Some(object) = object {
+                output.push(object);
+            }
+        }
+        output
+    }
+
+    fn impl_items(
+        &mut self,
+        items: &[syn::ImplItem],
+        parent_path: &[String],
+    ) -> Vec<SemanticObject> {
+        let mut output = Vec::new();
+        for item in items {
+            if self.remaining == 0 {
+                self.truncated = true;
+                break;
+            }
+            self.remaining -= 1;
+            let object = match item {
+                syn::ImplItem::Fn(item) => Some(self.function(
+                    parent_path,
+                    &item.sig,
+                    item.span(),
+                    &item.attrs,
+                    SemanticObjectKind::Method,
+                )),
+                syn::ImplItem::Type(item) => Some(self.object(
+                    parent_path,
+                    RustSemanticObject {
+                        name: item.ident.to_string(),
+                        kind: SemanticObjectKind::TypeAlias,
+                        detail: Some(compact_rust_tokens(item.ty.to_token_stream())),
+                        full_span: item.span(),
+                        selection_span: item.ident.span(),
+                        attributes: compact_attributes(&item.attrs),
+                        children: Vec::new(),
+                    },
+                )),
+                syn::ImplItem::Const(item) => Some(self.object(
+                    parent_path,
+                    RustSemanticObject {
+                        name: item.ident.to_string(),
+                        kind: SemanticObjectKind::Constant,
+                        detail: Some(compact_rust_tokens(item.ty.to_token_stream())),
+                        full_span: item.span(),
+                        selection_span: item.ident.span(),
+                        attributes: compact_attributes(&item.attrs),
+                        children: Vec::new(),
+                    },
+                )),
+                _ => {
+                    self.remaining += 1;
+                    None
+                }
+            };
+            if let Some(object) = object {
+                output.push(object);
+            }
+        }
+        output
+    }
+
+    fn function(
+        &mut self,
+        parent_path: &[String],
+        signature: &syn::Signature,
+        full_span: Span,
+        attributes: &[syn::Attribute],
+        kind: SemanticObjectKind,
+    ) -> SemanticObject {
+        let mut function_path = parent_path.to_vec();
+        function_path.push(signature.ident.to_string());
+        let mut children = Vec::new();
+        for (index, argument) in signature.inputs.iter().enumerate() {
+            if self.remaining == 0 {
+                self.truncated = true;
+                break;
+            }
+            self.remaining -= 1;
+            let (name, detail, selection_span, attributes) = match argument {
+                syn::FnArg::Receiver(receiver) => (
+                    "self".to_owned(),
+                    compact_rust_tokens(receiver.to_token_stream()),
+                    receiver.self_token.span(),
+                    Vec::new(),
+                ),
+                syn::FnArg::Typed(argument) => (
+                    compact_rust_tokens(argument.pat.to_token_stream()),
+                    compact_rust_tokens(argument.ty.to_token_stream()),
+                    argument.pat.span(),
+                    compact_attributes(&argument.attrs),
+                ),
+            };
+            children.push(self.object(
+                &function_path,
+                RustSemanticObject {
+                    name: format!("{name}#{index}"),
+                    kind: SemanticObjectKind::Parameter,
+                    detail: Some(detail),
+                    full_span: argument.span(),
+                    selection_span,
+                    attributes,
+                    children: Vec::new(),
+                },
+            ));
+        }
+        self.object(
+            parent_path,
+            RustSemanticObject {
+                name: signature.ident.to_string(),
+                kind,
+                detail: None,
+                full_span,
+                selection_span: signature.ident.span(),
+                attributes: compact_attributes(attributes),
+                children,
+            },
+        )
+    }
+
+    fn object(&self, parent_path: &[String], object: RustSemanticObject) -> SemanticObject {
+        let range = span_semantic_range(self.source, object.full_span);
+        let selection_range = span_semantic_range(self.source, object.selection_span);
+        let mut path = parent_path.to_vec();
+        path.push(object.name.clone());
+        let discriminator = format!(
+            "{}:{}:{}",
+            selection_range.start.line,
+            selection_range.start.character,
+            object.kind.label()
+        );
+        SemanticObject {
+            id: SemanticObjectId::with_discriminator("rust", self.document, path, discriminator),
+            kind: object.kind,
+            name: object.name,
+            detail: object.detail,
+            range,
+            selection_range,
+            attributes: object.attributes,
+            children: object.children,
+        }
     }
 }
 

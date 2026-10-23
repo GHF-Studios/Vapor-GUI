@@ -232,77 +232,6 @@ impl ProblemStore {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use vapor_gui_core::DiagnosticSpan;
-    use vapor_gui_core::semantic::SemanticPosition;
-
-    fn source_diagnostic(line: u32, start: u32, end: u32) -> StructuredDiagnostic {
-        StructuredDiagnostic {
-            origin: DiagnosticOrigin::RustAnalyzer,
-            severity: DiagnosticSeverity::Warning,
-            code: Some("rust.test".to_owned()),
-            message: "warning on declaration".to_owned(),
-            rendered: None,
-            primary: Some(DiagnosticSpan {
-                file: "src/components.rs".to_owned(),
-                start_line: line,
-                start_column: start,
-                end_line: line,
-                end_column: end,
-                primary: true,
-                label: None,
-            }),
-            related: Vec::new(),
-
-            raw_payload: String::new(),
-            context: Default::default(),
-        }
-    }
-
-    #[test]
-    fn semantic_inspector_gets_only_overlapping_source_diagnostics() {
-        let mut store = ProblemStore::default();
-        store.replace_source_diagnostics(
-            PathBuf::from("src/components.rs"),
-            DiagnosticOrigin::RustAnalyzer,
-            vec![source_diagnostic(5, 4, 10)],
-        );
-
-        let overlapping = store.for_semantic_range(
-            Path::new("src/components.rs"),
-            SemanticRange {
-                start: SemanticPosition {
-                    line: 4,
-                    character: 0,
-                },
-                end: SemanticPosition {
-                    line: 5,
-                    character: 2,
-                },
-            },
-        );
-        let outside = store.for_semantic_range(
-            Path::new("src/components.rs"),
-            SemanticRange {
-                start: SemanticPosition {
-                    line: 5,
-                    character: 10,
-                },
-                end: SemanticPosition {
-                    line: 6,
-                    character: 0,
-                },
-            },
-        );
-
-        assert_eq!(overlapping.len(), 1);
-        assert_eq!(overlapping[0].code.as_deref(), Some("rust.test"));
-        assert!(outside.is_empty());
-    }
-}
-
 pub(super) fn truncate_diagnostic_payload(payload: &str) -> String {
     const MAX_BYTES: usize = 64 * 1024;
     if payload.len() <= MAX_BYTES {
@@ -435,5 +364,76 @@ pub(super) fn semantic_source_limit_diagnostic() -> vapor_gui_core::StructuredDi
             scope: vapor_gui_core::DiagnosticScope::Document,
             ..Default::default()
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vapor_gui_core::DiagnosticSpan;
+    use vapor_gui_core::semantic::SemanticPosition;
+
+    fn source_diagnostic(line: u32, start: u32, end: u32) -> StructuredDiagnostic {
+        StructuredDiagnostic {
+            origin: DiagnosticOrigin::RustAnalyzer,
+            severity: DiagnosticSeverity::Warning,
+            code: Some("rust.test".to_owned()),
+            message: "warning on declaration".to_owned(),
+            rendered: None,
+            primary: Some(DiagnosticSpan {
+                file: "src/components.rs".to_owned(),
+                start_line: line,
+                start_column: start,
+                end_line: line,
+                end_column: end,
+                primary: true,
+                label: None,
+            }),
+            related: Vec::new(),
+
+            raw_payload: String::new(),
+            context: Default::default(),
+        }
+    }
+
+    #[test]
+    fn semantic_inspector_gets_only_overlapping_source_diagnostics() {
+        let mut store = ProblemStore::default();
+        store.replace_source_diagnostics(
+            PathBuf::from("src/components.rs"),
+            DiagnosticOrigin::RustAnalyzer,
+            vec![source_diagnostic(5, 4, 10)],
+        );
+
+        let overlapping = store.for_semantic_range(
+            Path::new("src/components.rs"),
+            SemanticRange {
+                start: SemanticPosition {
+                    line: 4,
+                    character: 0,
+                },
+                end: SemanticPosition {
+                    line: 5,
+                    character: 2,
+                },
+            },
+        );
+        let outside = store.for_semantic_range(
+            Path::new("src/components.rs"),
+            SemanticRange {
+                start: SemanticPosition {
+                    line: 5,
+                    character: 10,
+                },
+                end: SemanticPosition {
+                    line: 6,
+                    character: 0,
+                },
+            },
+        );
+
+        assert_eq!(overlapping.len(), 1);
+        assert_eq!(overlapping[0].code.as_deref(), Some("rust.test"));
+        assert!(outside.is_empty());
     }
 }

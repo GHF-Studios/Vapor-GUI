@@ -338,6 +338,121 @@ fn format_timestamp(timestamp_unix_ms: u64) -> String {
     )
 }
 
+/// Convert service operation output into the canonical console history format.
+/// Structured diagnostics stay one searchable row and retain source and raw
+/// producer details as fields for hover inspection.
+pub fn records_from_operation_output(
+    output: &vapor_client_protocol::OperationOutputEvent,
+) -> Vec<ConsoleRecord> {
+    let source = if output.source.is_empty() {
+        "command"
+    } else {
+        output.source.as_str()
+    };
+    let stream = format!("{:?}", output.stream).to_ascii_lowercase();
+    let mut messages = if let Some(diagnostic) = &output.diagnostic {
+        vec![
+            diagnostic
+                .message
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_owned(),
+        ]
+    } else {
+        super::plain_terminal_text(&output.text)
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(str::to_owned)
+            .collect()
+    };
+    if messages.is_empty() {
+        return Vec::new();
+    }
+    let mut records = Vec::with_capacity(messages.len());
+    for message in messages.drain(..) {
+        let level = output
+            .diagnostic
+            .as_ref()
+            .map_or(output.level, |diagnostic| {
+                diagnostic.severity.console_level()
+            });
+        let mut record = ConsoleRecord::new(
+            output.timestamp_unix_ms,
+            level,
+            source,
+            super::plain_terminal_text(&message),
+        )
+        .target(output.action.clone())
+        .field("origin", output.origin.label())
+        .field("operation", output.id.clone())
+        .field("stream", stream.clone());
+        if let Some(process) = &output.process {
+            record = record.field("process", process.clone());
+        }
+        if let Some(composition_id) = &output.composition_id {
+            record = record.field("composition", composition_id.clone());
+        }
+        if let Some(diagnostic) = &output.diagnostic {
+            record = record.field(
+                "producer",
+                format!("{:?}", diagnostic.origin).to_ascii_lowercase(),
+            );
+            if let Some(domain) = &diagnostic.context.domain {
+                record = record.field("domain", domain.clone());
+            }
+            if diagnostic.context.scope != vapor_console_core::DiagnosticScope::Unspecified {
+                record = record.field("scope", diagnostic.context.scope.label());
+            }
+            if let Some(workspace) = &diagnostic.context.workspace {
+                record = record.field("workspace", workspace.clone());
+            }
+            if let Some(document_version) = diagnostic.context.document_version {
+                record = record.field("document revision", document_version.to_string());
+            }
+            if let Some(semantic_path) = &diagnostic.context.semantic_path {
+                record = record.field("semantic", semantic_path.clone());
+            }
+            if let Some(operation_id) = &diagnostic.context.operation_id {
+                record = record.field("diagnostic operation", operation_id.clone());
+            }
+            if let Some(code) = &diagnostic.code {
+                record = record.field("code", code.clone());
+            }
+            if let Some(primary) = &diagnostic.primary {
+                record = record.field(
+                    "location",
+                    format!(
+                        "{}:{}:{}",
+                        primary.file, primary.start_line, primary.start_column
+                    ),
+                );
+                if let Some(label) = &primary.label {
+                    record = record.field("location detail", label.clone());
+                }
+            }
+            for related in &diagnostic.related {
+                let label = related.label.as_deref().unwrap_or("related");
+                record = record.field(
+                    "related location",
+                    format!(
+                        "{label}: {}:{}:{}",
+                        related.file, related.start_line, related.start_column
+                    ),
+                );
+            }
+            if let Some(rendered) = &diagnostic.rendered {
+                record = record.field("rendered", super::plain_terminal_text(rendered));
+            }
+            record = record.field("raw", diagnostic.raw_payload.clone());
+        } else if let Some(raw_payload) = &output.raw_payload {
+            record = record.field("raw", raw_payload.clone());
+        }
+        records.push(record);
+    }
+    records
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ConsoleViewCache, records_from_operation_output};
@@ -571,119 +686,4 @@ mod tests {
                 .any(|field| field.key == "raw" && field.value.contains("compiler-artifact"))
         );
     }
-}
-
-/// Convert service operation output into the canonical console history format.
-/// Structured diagnostics stay one searchable row and retain source and raw
-/// producer details as fields for hover inspection.
-pub fn records_from_operation_output(
-    output: &vapor_client_protocol::OperationOutputEvent,
-) -> Vec<ConsoleRecord> {
-    let source = if output.source.is_empty() {
-        "command"
-    } else {
-        output.source.as_str()
-    };
-    let stream = format!("{:?}", output.stream).to_ascii_lowercase();
-    let mut messages = if let Some(diagnostic) = &output.diagnostic {
-        vec![
-            diagnostic
-                .message
-                .lines()
-                .next()
-                .unwrap_or_default()
-                .to_owned(),
-        ]
-    } else {
-        super::plain_terminal_text(&output.text)
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(str::to_owned)
-            .collect()
-    };
-    if messages.is_empty() {
-        return Vec::new();
-    }
-    let mut records = Vec::with_capacity(messages.len());
-    for message in messages.drain(..) {
-        let level = output
-            .diagnostic
-            .as_ref()
-            .map_or(output.level, |diagnostic| {
-                diagnostic.severity.console_level()
-            });
-        let mut record = ConsoleRecord::new(
-            output.timestamp_unix_ms,
-            level,
-            source,
-            super::plain_terminal_text(&message),
-        )
-        .target(output.action.clone())
-        .field("origin", output.origin.label())
-        .field("operation", output.id.clone())
-        .field("stream", stream.clone());
-        if let Some(process) = &output.process {
-            record = record.field("process", process.clone());
-        }
-        if let Some(composition_id) = &output.composition_id {
-            record = record.field("composition", composition_id.clone());
-        }
-        if let Some(diagnostic) = &output.diagnostic {
-            record = record.field(
-                "producer",
-                format!("{:?}", diagnostic.origin).to_ascii_lowercase(),
-            );
-            if let Some(domain) = &diagnostic.context.domain {
-                record = record.field("domain", domain.clone());
-            }
-            if diagnostic.context.scope != vapor_console_core::DiagnosticScope::Unspecified {
-                record = record.field("scope", diagnostic.context.scope.label());
-            }
-            if let Some(workspace) = &diagnostic.context.workspace {
-                record = record.field("workspace", workspace.clone());
-            }
-            if let Some(document_version) = diagnostic.context.document_version {
-                record = record.field("document revision", document_version.to_string());
-            }
-            if let Some(semantic_path) = &diagnostic.context.semantic_path {
-                record = record.field("semantic", semantic_path.clone());
-            }
-            if let Some(operation_id) = &diagnostic.context.operation_id {
-                record = record.field("diagnostic operation", operation_id.clone());
-            }
-            if let Some(code) = &diagnostic.code {
-                record = record.field("code", code.clone());
-            }
-            if let Some(primary) = &diagnostic.primary {
-                record = record.field(
-                    "location",
-                    format!(
-                        "{}:{}:{}",
-                        primary.file, primary.start_line, primary.start_column
-                    ),
-                );
-                if let Some(label) = &primary.label {
-                    record = record.field("location detail", label.clone());
-                }
-            }
-            for related in &diagnostic.related {
-                let label = related.label.as_deref().unwrap_or("related");
-                record = record.field(
-                    "related location",
-                    format!(
-                        "{label}: {}:{}:{}",
-                        related.file, related.start_line, related.start_column
-                    ),
-                );
-            }
-            if let Some(rendered) = &diagnostic.rendered {
-                record = record.field("rendered", super::plain_terminal_text(rendered));
-            }
-            record = record.field("raw", diagnostic.raw_payload.clone());
-        } else if let Some(raw_payload) = &output.raw_payload {
-            record = record.field("raw", raw_payload.clone());
-        }
-        records.push(record);
-    }
-    records
 }

@@ -124,7 +124,7 @@ fn bound_semantic_outline(
 fn objects_belong_to_document(objects: &[SemanticObject], path: &Path) -> bool {
     let mut pending = objects.iter().collect::<Vec<_>>();
     while let Some(object) = pending.pop() {
-        if &object.id.document != path {
+        if object.id.document != path {
             return false;
         }
         pending.extend(object.children.iter());

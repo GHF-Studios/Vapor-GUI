@@ -9,107 +9,6 @@ pub(super) struct XmlParseError {
     pub(super) offset: usize,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::parse_xml_semantic_objects;
-    use std::path::Path;
-    use vapor_gui_core::semantic::SemanticObject;
-
-    fn find<'a>(objects: &'a [SemanticObject], qualified_name: &str) -> Option<&'a SemanticObject> {
-        objects.iter().find_map(|object| {
-            (object.id.qualified_name() == qualified_name)
-                .then_some(object)
-                .or_else(|| find(&object.children, qualified_name))
-        })
-    }
-
-    #[test]
-    fn xml_outline_indexes_nested_elements_and_attribute_names_without_values() {
-        let source = r#"<project version="4"><component name="RustProjectSettings"><option name="toolchainHomeDirectory" value="/private/toolchain" /></component></project>"#;
-        let objects =
-            parse_xml_semantic_objects(Path::new("project.xml"), source).expect("valid XML");
-
-        let option = find(&objects, "project.component.option").expect("option node");
-        assert_eq!(
-            option.kind,
-            vapor_gui_core::semantic::SemanticObjectKind::Configuration
-        );
-        assert!(find(&objects, "project.component.option.@name").is_some());
-        let value =
-            find(&objects, "project.component.option.@value").expect("value attribute name");
-        assert_eq!(
-            &source[value.selection_range.start.character as usize..][..5],
-            "value"
-        );
-        let all_names = format!("{objects:#?}");
-        assert!(!all_names.contains("/private/toolchain"));
-        assert!(option.range.end.line == 0);
-        assert!(option.range.end.character > option.range.start.character);
-    }
-
-    #[test]
-    fn repeated_siblings_get_distinct_semantic_paths_and_unicode_offsets() {
-        let source = "<root><item name=\"one\"/><item name=\"é\"/></root>";
-        let objects =
-            parse_xml_semantic_objects(Path::new("config.xml"), source).expect("valid XML");
-        assert!(find(&objects, "root.item").is_some());
-        let second_item = find(&objects, "root.item[2]").expect("second item");
-        assert_eq!(second_item.name, "item [2]");
-        let second_name = find(&objects, "root.item[2].@name").expect("second attribute");
-        assert!(second_name.range.start.character > 0);
-        assert!(second_name.range.end.character > second_name.range.start.character);
-    }
-
-    #[test]
-    fn xml_outline_handles_self_closing_elements_and_reports_malformed_input() {
-        let objects = parse_xml_semantic_objects(
-            Path::new("vapor.xml"),
-            "<project><component name=\"Vapor\" /></project>",
-        )
-        .expect("valid XML");
-        assert!(find(&objects, "project.component").is_some());
-        assert!(
-            parse_xml_semantic_objects(Path::new("broken.xml"), "<project><component></project>")
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn dense_xml_projection_is_bounded_and_marks_the_partial_outline() {
-        let source = format!("<root>{}</root>", "<item />".repeat(5_000));
-        let objects =
-            parse_xml_semantic_objects(Path::new("dense.xml"), &source).expect("valid dense XML");
-        assert!(semantic_object_count(&objects) <= vapor_gui_core::semantic::MAX_SEMANTIC_OBJECTS);
-        assert!(
-            objects[0]
-                .attributes
-                .iter()
-                .any(|attribute| attribute.contains("outline truncated"))
-        );
-    }
-
-    #[test]
-    fn deep_xml_projection_is_bounded_and_marks_the_partial_outline() {
-        let source = format!("{}{}", "<node>".repeat(80), "</node>".repeat(80));
-        let objects =
-            parse_xml_semantic_objects(Path::new("deep.xml"), &source).expect("valid nested XML");
-        assert!(
-            objects[0]
-                .attributes
-                .iter()
-                .any(|attribute| attribute.contains("outline truncated"))
-        );
-        assert!(semantic_object_count(&objects) <= vapor_gui_core::semantic::MAX_SEMANTIC_OBJECTS);
-    }
-
-    fn semantic_object_count(objects: &[SemanticObject]) -> usize {
-        objects
-            .iter()
-            .map(|object| 1 + semantic_object_count(&object.children))
-            .sum()
-    }
-}
-
 struct ElementFrame {
     object: SemanticObject,
     path: Vec<String>,
@@ -313,7 +212,7 @@ fn element_object(
         .get(start..)
         .and_then(|opening| opening.find('>').map(|offset| start + offset + 1))
         .unwrap_or(event_end);
-    let name_span = locate_xml_name(source, start, end, &raw_name).unwrap_or_else(|| start..end);
+    let name_span = locate_xml_name(source, start, end, &raw_name).unwrap_or(start..end);
     let mut children = Vec::new();
     for attribute in event.attributes() {
         let attribute = attribute?;
@@ -472,5 +371,106 @@ pub(super) fn xml_parse_diagnostic(
             scope: vapor_gui_core::DiagnosticScope::Document,
             ..Default::default()
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_xml_semantic_objects;
+    use std::path::Path;
+    use vapor_gui_core::semantic::SemanticObject;
+
+    fn find<'a>(objects: &'a [SemanticObject], qualified_name: &str) -> Option<&'a SemanticObject> {
+        objects.iter().find_map(|object| {
+            (object.id.qualified_name() == qualified_name)
+                .then_some(object)
+                .or_else(|| find(&object.children, qualified_name))
+        })
+    }
+
+    #[test]
+    fn xml_outline_indexes_nested_elements_and_attribute_names_without_values() {
+        let source = r#"<project version="4"><component name="RustProjectSettings"><option name="toolchainHomeDirectory" value="/private/toolchain" /></component></project>"#;
+        let objects =
+            parse_xml_semantic_objects(Path::new("project.xml"), source).expect("valid XML");
+
+        let option = find(&objects, "project.component.option").expect("option node");
+        assert_eq!(
+            option.kind,
+            vapor_gui_core::semantic::SemanticObjectKind::Configuration
+        );
+        assert!(find(&objects, "project.component.option.@name").is_some());
+        let value =
+            find(&objects, "project.component.option.@value").expect("value attribute name");
+        assert_eq!(
+            &source[value.selection_range.start.character as usize..][..5],
+            "value"
+        );
+        let all_names = format!("{objects:#?}");
+        assert!(!all_names.contains("/private/toolchain"));
+        assert!(option.range.end.line == 0);
+        assert!(option.range.end.character > option.range.start.character);
+    }
+
+    #[test]
+    fn repeated_siblings_get_distinct_semantic_paths_and_unicode_offsets() {
+        let source = "<root><item name=\"one\"/><item name=\"é\"/></root>";
+        let objects =
+            parse_xml_semantic_objects(Path::new("config.xml"), source).expect("valid XML");
+        assert!(find(&objects, "root.item").is_some());
+        let second_item = find(&objects, "root.item[2]").expect("second item");
+        assert_eq!(second_item.name, "item [2]");
+        let second_name = find(&objects, "root.item[2].@name").expect("second attribute");
+        assert!(second_name.range.start.character > 0);
+        assert!(second_name.range.end.character > second_name.range.start.character);
+    }
+
+    #[test]
+    fn xml_outline_handles_self_closing_elements_and_reports_malformed_input() {
+        let objects = parse_xml_semantic_objects(
+            Path::new("vapor.xml"),
+            "<project><component name=\"Vapor\" /></project>",
+        )
+        .expect("valid XML");
+        assert!(find(&objects, "project.component").is_some());
+        assert!(
+            parse_xml_semantic_objects(Path::new("broken.xml"), "<project><component></project>")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn dense_xml_projection_is_bounded_and_marks_the_partial_outline() {
+        let source = format!("<root>{}</root>", "<item />".repeat(5_000));
+        let objects =
+            parse_xml_semantic_objects(Path::new("dense.xml"), &source).expect("valid dense XML");
+        assert!(semantic_object_count(&objects) <= vapor_gui_core::semantic::MAX_SEMANTIC_OBJECTS);
+        assert!(
+            objects[0]
+                .attributes
+                .iter()
+                .any(|attribute| attribute.contains("outline truncated"))
+        );
+    }
+
+    #[test]
+    fn deep_xml_projection_is_bounded_and_marks_the_partial_outline() {
+        let source = format!("{}{}", "<node>".repeat(80), "</node>".repeat(80));
+        let objects =
+            parse_xml_semantic_objects(Path::new("deep.xml"), &source).expect("valid nested XML");
+        assert!(
+            objects[0]
+                .attributes
+                .iter()
+                .any(|attribute| attribute.contains("outline truncated"))
+        );
+        assert!(semantic_object_count(&objects) <= vapor_gui_core::semantic::MAX_SEMANTIC_OBJECTS);
+    }
+
+    fn semantic_object_count(objects: &[SemanticObject]) -> usize {
+        objects
+            .iter()
+            .map(|object| 1 + semantic_object_count(&object.children))
+            .sum()
     }
 }
