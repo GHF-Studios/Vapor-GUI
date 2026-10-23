@@ -714,14 +714,15 @@ impl IdeApp {
         if source.len() > vapor_gui_core::semantic::MAX_SEMANTIC_DOCUMENT_BYTES {
             self.semantic.index
                 .replace_document(path.to_path_buf(), version, Vec::new());
-            if let Some(relative_path) = self
-                .workspace.root.as_deref()
-                .and_then(|root| relative_workspace_path(root, path))
+            if let Some(root) = self.workspace.root.as_deref()
+                && let Some(relative_path) = relative_workspace_path(root, path)
             {
+                let mut diagnostics = vec![semantic_source_limit_diagnostic()];
+                attach_document_context(&mut diagnostics, root, version);
                 self.semantic.problems.replace_source_diagnostics(
                     relative_path,
                     vapor_gui_core::DiagnosticOrigin::Vapor,
-                    vec![semantic_source_limit_diagnostic()],
+                    diagnostics,
                 );
             }
             self.workspace.status = "Semantic indexing paused for this file because it exceeds 2 MiB; editing remains available.".to_owned();
@@ -738,8 +739,11 @@ impl IdeApp {
                         self.semantic.index
                             .replace_document(path.to_path_buf(), version, objects);
                         if let Some(relative_path) = relative_path {
-                            let diagnostics =
+                            let mut diagnostics =
                                 toml_semantics::authored_manifest_diagnostics(path, source);
+                            if let Some(root) = self.workspace.root.as_deref() {
+                                attach_document_context(&mut diagnostics, root, version);
+                            }
                             if diagnostics.is_empty() {
                                 self.semantic.problems.remove_source_diagnostics(
                                     &relative_path,
@@ -758,10 +762,14 @@ impl IdeApp {
                         self.semantic.index
                             .replace_document(path.to_path_buf(), version, Vec::new());
                         if let Some(relative_path) = relative_path {
+                            let mut diagnostics = vec![toml_parse_diagnostic(path, source, &error)];
+                            if let Some(root) = self.workspace.root.as_deref() {
+                                attach_document_context(&mut diagnostics, root, version);
+                            }
                             self.semantic.problems.replace_source_diagnostics(
                                 relative_path,
                                 vapor_gui_core::DiagnosticOrigin::Vapor,
-                                vec![toml_parse_diagnostic(path, source, &error)],
+                                diagnostics,
                             );
                         }
                     }
@@ -781,10 +789,14 @@ impl IdeApp {
                     Err(error) => {
                         self.semantic.index.replace_document(path.to_path_buf(), version, Vec::new());
                         if let Some(relative_path) = relative_path {
+                            let mut diagnostics = vec![xml_parse_diagnostic(path, source, &error)];
+                            if let Some(root) = self.workspace.root.as_deref() {
+                                attach_document_context(&mut diagnostics, root, version);
+                            }
                             self.semantic.problems.replace_source_diagnostics(
                                 relative_path,
                                 vapor_gui_core::DiagnosticOrigin::Vapor,
-                                vec![xml_parse_diagnostic(path, source, &error)],
+                                diagnostics,
                             );
                         }
                     }
@@ -795,8 +807,11 @@ impl IdeApp {
                 self.semantic.index
                     .replace_document(path.to_path_buf(), version, objects);
                 if let Some(relative_path) = relative_path {
-                    let diagnostics =
+                    let mut diagnostics =
                         vapor_gui_core::rhai_semantics::rhai_structure_diagnostics(path, source);
+                    if let Some(root) = self.workspace.root.as_deref() {
+                        attach_document_context(&mut diagnostics, root, version);
+                    }
                     if diagnostics.is_empty() {
                         self.semantic.problems.remove_source_diagnostics(
                             &relative_path,
@@ -1077,6 +1092,13 @@ impl IdeApp {
                             );
                             if source_too_large {
                                 diagnostics.push(semantic_source_limit_diagnostic());
+                            }
+                            if let Some(root) = self.workspace.root.as_deref() {
+                                attach_document_context(
+                                    &mut diagnostics,
+                                    root,
+                                    document.version as u64,
+                                );
                             }
                             if diagnostics.is_empty() {
                                 self.semantic.problems.remove_source_diagnostics(

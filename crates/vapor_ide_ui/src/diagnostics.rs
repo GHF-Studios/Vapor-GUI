@@ -15,6 +15,25 @@ pub(super) struct ProblemRowRef<'a> {
     pub(super) diagnostic: &'a StructuredDiagnostic,
 }
 
+pub(super) fn attach_document_context(
+    diagnostics: &mut [StructuredDiagnostic],
+    workspace: &Path,
+    document_version: u64,
+) {
+    let workspace = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_path_buf())
+        .to_string_lossy()
+        .into_owned();
+    for diagnostic in diagnostics {
+        diagnostic.context.workspace = Some(workspace.clone());
+        diagnostic.context.document_version = Some(document_version);
+        if diagnostic.context.scope == vapor_gui_core::DiagnosticScope::Unspecified {
+            diagnostic.context.scope = vapor_gui_core::DiagnosticScope::Document;
+        }
+    }
+}
+
 const MAX_BUILD_PROBLEMS: usize = 2_000;
 
 pub(super) struct ProblemStore {

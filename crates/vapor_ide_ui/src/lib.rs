@@ -36,7 +36,7 @@ mod lsp_text;
 
 use authoring::WorkspaceAuthoring;
 use diagnostics::{
-    ProblemRow, ProblemRowRef, ProblemStore, diagnostic_origin_label,
+    ProblemRow, ProblemRowRef, ProblemStore, attach_document_context, diagnostic_origin_label,
     operation_produces_build_diagnostics, semantic_source_limit_diagnostic,
     workspace_diagnostic_path,
 };

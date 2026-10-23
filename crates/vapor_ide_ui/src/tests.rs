@@ -1143,3 +1143,45 @@ fn diagnostic_details_show_typed_context_without_losing_raw_payload() {
     assert!(details.contains("Raw diagnostic\nopaque payload"));
 }
 
+#[test]
+fn source_diagnostic_context_adds_workspace_revision_without_erasing_domain_scope() {
+    let document = vapor_gui_core::StructuredDiagnostic {
+        origin: vapor_gui_core::DiagnosticOrigin::Vapor,
+        severity: vapor_gui_core::DiagnosticSeverity::Warning,
+        code: Some("vapor.toml.shape".to_owned()),
+        message: "missing section".to_owned(),
+        rendered: None,
+        primary: None,
+        related: Vec::new(),
+        raw_payload: String::new(),
+        context: vapor_gui_core::DiagnosticContext {
+            domain: Some("vapor-packagepack".to_owned()),
+            scope: vapor_gui_core::DiagnosticScope::Document,
+            semantic_path: Some("packagepack.dependencies".to_owned()),
+            ..Default::default()
+        },
+    };
+    let unspecified = vapor_gui_core::StructuredDiagnostic {
+        origin: vapor_gui_core::DiagnosticOrigin::Vapor,
+        severity: vapor_gui_core::DiagnosticSeverity::Information,
+        code: None,
+        message: "semantic indexing paused".to_owned(),
+        rendered: None,
+        primary: None,
+        related: Vec::new(),
+        raw_payload: String::new(),
+        context: Default::default(),
+    };
+
+    let mut diagnostics = vec![document, unspecified];
+    super::diagnostics::attach_document_context(&mut diagnostics, Path::new("/workspace/game"), 12);
+
+    assert_eq!(diagnostics[0].context.domain.as_deref(), Some("vapor-packagepack"));
+    assert_eq!(diagnostics[0].context.scope, vapor_gui_core::DiagnosticScope::Document);
+    assert_eq!(diagnostics[0].context.semantic_path.as_deref(), Some("packagepack.dependencies"));
+    assert_eq!(diagnostics[0].context.workspace.as_deref(), Some("/workspace/game"));
+    assert_eq!(diagnostics[0].context.document_version, Some(12));
+    assert_eq!(diagnostics[1].context.scope, vapor_gui_core::DiagnosticScope::Document);
+    assert_eq!(diagnostics[1].context.document_version, Some(12));
+}
+
