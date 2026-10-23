@@ -1,5 +1,9 @@
-use super::{Document, IdeApp, PendingAction, canonical_rust_item_kind, rust_semantics};
+use super::{
+    Document, IdeApp, PendingAction, WorkspaceSourceProject, canonical_rust_item_kind,
+    rust_semantics,
+};
 use eframe::egui;
+use std::collections::BTreeSet;
 use vapor_client_domain::ContentKind;
 use vapor_client_protocol::{
     AuthoringAction, ClientAction, WorkshopMetadataDraft, WorkspaceAction,
@@ -15,6 +19,7 @@ pub(super) struct WorkspaceAuthoring {
     new_content_kind: String,
     new_content_id: String,
     new_content_version: String,
+    new_content_selected_dependencies: BTreeSet<String>,
     new_content_dependencies: String,
 }
 
@@ -105,6 +110,10 @@ impl IdeApp {
         self.interface.authoring.new_content_kind = ContentKind::Game.as_str().to_owned();
         self.interface.authoring.new_content_id.clear();
         self.interface.authoring.new_content_version = "0.5.0".to_owned();
+        self.interface
+            .authoring
+            .new_content_selected_dependencies
+            .clear();
         self.interface.authoring.new_content_dependencies.clear();
         self.interface.authoring.new_content_dialog = true;
     }
@@ -124,6 +133,7 @@ impl IdeApp {
             &self.interface.authoring.new_content_kind,
             &self.interface.authoring.new_content_id,
             &self.interface.authoring.new_content_version,
+            &self.interface.authoring.new_content_selected_dependencies,
             &self.interface.authoring.new_content_dependencies,
         ) {
             Ok(action) => action,
@@ -218,6 +228,7 @@ impl IdeApp {
                         .new_content_kind
                         .parse::<ContentKind>()
                         .unwrap_or(ContentKind::Game);
+                    let previous_kind = self.interface.authoring.new_content_kind.clone();
                     egui::ComboBox::from_label("Content type")
                         .selected_text(selected_kind.as_str())
                         .show_ui(ui, |ui| {
@@ -229,6 +240,12 @@ impl IdeApp {
                                 );
                             }
                         });
+                    if self.interface.authoring.new_content_kind != previous_kind {
+                        self.interface
+                            .authoring
+                            .new_content_selected_dependencies
+                            .clear();
+                    }
                     ui.label("Vapor ID");
                     ui.add(
                         egui::TextEdit::singleline(
@@ -248,14 +265,61 @@ impl IdeApp {
                             .desired_width(120.0),
                         );
                     });
-                    ui.label("Required dependencies (one Vapor selector per line; optional).");
-                    ui.add(
-                        egui::TextEdit::multiline(
-                            &mut self.interface.authoring.new_content_dependencies,
+                    let selected_kind = self
+                        .interface
+                        .authoring
+                        .new_content_kind
+                        .parse::<ContentKind>()
+                        .ok();
+                    let eligible = selected_kind.map_or_else(Vec::new, |kind| {
+                        compatible_source_projects(
+                            kind,
+                            &self.workspace.content.source_projects,
                         )
-                        .desired_rows(3)
-                        .desired_width(f32::INFINITY),
-                    );
+                    });
+                    ui.label("Required dependencies");
+                    if eligible.is_empty() {
+                        ui.weak("No compatible local source projects are registered here.");
+                    } else {
+                        let row_height = ui.text_style_height(&egui::TextStyle::Body) + 4.0;
+                        egui::ScrollArea::vertical()
+                            .max_height(132.0)
+                            .show_rows(ui, row_height, eligible.len(), |ui, rows| {
+                                for index in rows {
+                                    let Some((selector, label)) = eligible.get(index) else {
+                                        continue;
+                                    };
+                                    let mut checked = self
+                                        .interface
+                                        .authoring
+                                        .new_content_selected_dependencies
+                                        .contains(selector);
+                                    if ui.checkbox(&mut checked, label).changed() {
+                                        if checked {
+                                            self.interface
+                                                .authoring
+                                                .new_content_selected_dependencies
+                                                .insert(selector.clone());
+                                        } else {
+                                            self.interface
+                                                .authoring
+                                                .new_content_selected_dependencies
+                                                .remove(selector);
+                                        }
+                                    }
+                                }
+                            });
+                    }
+                    ui.collapsing("Advanced selectors", |ui| {
+                        ui.label("One required Vapor selector per line.");
+                        ui.add(
+                            egui::TextEdit::multiline(
+                                &mut self.interface.authoring.new_content_dependencies,
+                            )
+                            .desired_rows(2)
+                            .desired_width(f32::INFINITY),
+                        );
+                    });
                     ui.horizontal(|ui| {
                         if ui
                             .add_enabled(
@@ -286,6 +350,7 @@ fn vapor_content_creation_action(
     kind: &str,
     id: &str,
     version: &str,
+    selected_dependencies: &BTreeSet<String>,
     dependencies: &str,
 ) -> Result<ClientAction, String> {
     let kind = kind
@@ -299,11 +364,18 @@ fn vapor_content_creation_action(
     if version.is_empty() {
         return Err("Enter a content version.".to_owned());
     }
-    let dependencies = dependencies
-        .lines()
-        .map(str::trim)
-        .filter(|dependency| !dependency.is_empty())
-        .map(str::to_owned)
+    let dependencies = selected_dependencies
+        .iter()
+        .cloned()
+        .chain(
+            dependencies
+                .lines()
+                .map(str::trim)
+                .filter(|dependency| !dependency.is_empty())
+                .map(str::to_owned),
+        )
+        .collect::<BTreeSet<_>>()
+        .into_iter()
         .collect();
     Ok(ClientAction::Authoring(AuthoringAction::CreateContent {
         workspace_root: workspace_root.to_string_lossy().into_owned(),
@@ -316,19 +388,94 @@ fn vapor_content_creation_action(
     }))
 }
 
+fn compatible_source_projects(
+    kind: ContentKind,
+    projects: &[WorkspaceSourceProject],
+) -> Vec<(String, String)> {
+    let mut projects = projects
+        .iter()
+        .filter_map(|project| {
+            let project_kind = project.kind.parse::<ContentKind>().ok()?;
+            vapor_client_domain::dependency_kind_allowed(kind, project_kind).then(|| {
+                let selector = project.version.as_ref().map_or_else(
+                    || project.id.clone(),
+                    |version| format!("{}@{version}", project.id),
+                );
+                (selector, format!("{} · {}", project.id, project.kind))
+            })
+        })
+        .collect::<Vec<_>>();
+    projects.sort_by(|left, right| left.1.cmp(&right.1));
+    projects
+}
+
 #[cfg(test)]
 mod tests {
-    use super::vapor_content_creation_action;
+    use super::{compatible_source_projects, vapor_content_creation_action};
+    use std::collections::BTreeSet;
+    use vapor_client_domain::ContentKind;
     use vapor_client_protocol::{AuthoringAction, ClientAction, WorkshopMetadataDraft};
+
+    fn source_project(
+        id: &str,
+        kind: &str,
+        version: &str,
+    ) -> vapor_client_protocol::WorkspaceSourceProject {
+        vapor_client_protocol::WorkspaceSourceProject {
+            id: id.to_owned(),
+            version: Some(version.to_owned()),
+            kind: kind.to_owned(),
+            root: format!("/workspace/{}", id.rsplit('/').next().unwrap()),
+            manifest: format!(
+                "/workspace/{}/{}.vapor.toml",
+                id.rsplit('/').next().unwrap(),
+                kind
+            ),
+            binaries: Vec::new(),
+            libraries: Vec::new(),
+            dependencies: Vec::new(),
+            workshop: Default::default(),
+        }
+    }
+
+    #[test]
+    fn content_creation_dependency_picker_uses_vapor_compatibility_and_pinned_versions() {
+        let projects = vec![
+            source_project("ghf-studios/demo/engine", "engine", "0.5.0"),
+            source_project("ghf-studios/demo/crate", "crate", "0.5.0"),
+            source_project("ghf-studios/demo/mod", "game-mod", "0.5.0"),
+        ];
+        assert_eq!(
+            compatible_source_projects(ContentKind::Game, &projects),
+            vec![
+                (
+                    "ghf-studios/demo/crate@0.5.0".to_owned(),
+                    "ghf-studios/demo/crate · crate".to_owned()
+                ),
+                (
+                    "ghf-studios/demo/engine@0.5.0".to_owned(),
+                    "ghf-studios/demo/engine · engine".to_owned()
+                )
+            ]
+        );
+        assert_eq!(
+            compatible_source_projects(ContentKind::Crate, &projects).len(),
+            1
+        );
+    }
 
     #[test]
     fn vapor_content_creation_uses_typed_role_and_normalizes_dependency_lines() {
+        let selected = ["ghf-studios/example/engine@0.5.0".to_owned()]
+            .into_iter()
+            .collect();
         assert_eq!(
             vapor_content_creation_action(
                 std::path::Path::new("/workspace"),
                 "game-mod",
                 "ghf-studios/example/bonus-mod",
                 "0.5.0",
+                &selected,
                 "\n ghf-studios/example/game@^0.5 \n\n",
             ),
             Ok(ClientAction::Authoring(AuthoringAction::CreateContent {
@@ -336,7 +483,10 @@ mod tests {
                 kind: "game-mod".to_owned(),
                 id: "ghf-studios/example/bonus-mod".to_owned(),
                 version: "0.5.0".to_owned(),
-                dependencies: vec!["ghf-studios/example/game@^0.5".to_owned()],
+                dependencies: vec![
+                    "ghf-studios/example/engine@0.5.0".to_owned(),
+                    "ghf-studios/example/game@^0.5".to_owned()
+                ],
                 optional_dependencies: Vec::new(),
                 workshop: WorkshopMetadataDraft::default(),
             }))
@@ -351,6 +501,7 @@ mod tests {
                 "game",
                 "",
                 "0.5.0",
+                &BTreeSet::new(),
                 "",
             )
             .is_err()
@@ -361,6 +512,7 @@ mod tests {
                 "game",
                 "ghf-studios/example/game",
                 "",
+                &BTreeSet::new(),
                 "",
             )
             .is_err()
