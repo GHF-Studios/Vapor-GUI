@@ -6,6 +6,7 @@ impl IdeApp {
         let mut run_project = false;
         let mut create_file = false;
         let mut create_rust_item = false;
+        let mut create_rust_module = false;
         let mut create_vapor_content = false;
         let mut open_project = false;
         let mut save_requested = false;
@@ -69,6 +70,26 @@ impl IdeApp {
                     .clicked()
                 {
                     create_rust_item = true;
+                    ui.close();
+                }
+                let rust_module_parent_open = self
+                    .editor
+                    .selected_file
+                    .as_deref()
+                    .is_some_and(|path| {
+                        canonical_rust_module_parent(path, &self.workspace.rust_crate_roots)
+                    });
+                if ui
+                    .add_enabled(
+                        rust_module_parent_open
+                            && self.workspace.pending.is_none()
+                            && !has_unsaved_edits,
+                        egui::Button::new("New canonical Rust module…"),
+                    )
+                    .on_disabled_hover_text("Open and save a Rust source file under a Cargo crate's `src` directory first.")
+                    .clicked()
+                {
+                    create_rust_module = true;
                     ui.close();
                 }
                 ui.separator();
@@ -257,6 +278,9 @@ impl IdeApp {
         }
         if create_rust_item {
             self.open_semantic_rust_item_dialog();
+        }
+        if create_rust_module {
+            self.open_canonical_rust_module_dialog();
         }
         if create_vapor_content {
             self.open_vapor_content_dialog();

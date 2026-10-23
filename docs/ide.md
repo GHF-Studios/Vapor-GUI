@@ -82,7 +82,7 @@ revision used for the request. Rust rename is prepared by Rust Analyzer, limited
 to open files in the current workspace, and presented as a multi-file preview;
 applying it updates editor buffers, and each file must still be saved to write
 the edits to disk. Stale buffers, outside-workspace paths, closed files, and
-file-creation/deletion edits are rejected.
+file-creation/deletion edits from rename previews are rejected.
 
 ## Current boundaries
 
@@ -104,6 +104,14 @@ file-creation/deletion edits are rejected.
   declarations/imports, malformed source, invalid identifiers, and files at the
   semantic indexing size limit are rejected. **New empty file** remains the
   deliberate raw-file escape.
+- **File → New canonical Rust module** creates one of the supported module
+  categories (`components`, `constants`, `events`, `functions`, `resources`,
+  `run_conditions`, `statics`, `systems`, or `types`) through the shared client
+  service. The service validates the selected parent, creates the standard
+  Rust module path, and adds its declaration to the parent source as one guarded
+  operation. This keeps routine module creation inside the canonical project
+  structure while leaving the explicit empty-file action available for unusual
+  layouts.
 - Create content projects in Studio's **Create** workflow. That service-owned
   operation registers the project in `Workspace.vapor.toml` and produces its
   role manifest and Cargo files together; the IDE does not create detached role

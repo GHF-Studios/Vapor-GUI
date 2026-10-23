@@ -60,9 +60,9 @@ use lsp_text::{
 };
 use toml_semantics::toml_parse_diagnostic;
 use workspace_navigation::{
-    FileTreeView, canonical_rust_item_kind, document_tab_label, draw_file_tree, reference_range,
-    rust_crate_roots, same_existing_workspace_path, workspace_content_is_within,
-    workspace_source_manifest,
+    FileTreeView, canonical_rust_item_kind, canonical_rust_module_parent, document_tab_label,
+    draw_file_tree, reference_range, rust_crate_roots, same_existing_workspace_path,
+    workspace_content_is_within, workspace_source_manifest,
 };
 #[cfg(test)]
 use workspace_navigation::{
@@ -145,8 +145,15 @@ enum PendingAction {
     OpenWorkspace(PathBuf),
     ListFiles,
     OpenFile,
-    SaveFile { path: PathBuf, contents: String },
+    SaveFile {
+        path: PathBuf,
+        contents: String,
+    },
     CreateFile,
+    CreateCanonicalRustModule {
+        parent_path: PathBuf,
+        expected_parent_fingerprint: String,
+    },
     CreateContent,
     Tool,
 }

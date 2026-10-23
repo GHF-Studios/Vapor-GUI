@@ -339,6 +339,12 @@ impl IdeApp {
                         if matches!(pending.action, PendingAction::CreateFile) {
                             self.interface.authoring.new_file_dialog = true;
                         }
+                        if matches!(
+                            pending.action,
+                            PendingAction::CreateCanonicalRustModule { .. }
+                        ) {
+                            self.interface.authoring.new_rust_module_dialog = true;
+                        }
                         if matches!(pending.action, PendingAction::CreateContent) {
                             self.interface.authoring.new_content_dialog = true;
                         }
@@ -581,6 +587,100 @@ impl IdeApp {
                 self.interface.authoring.new_file_path.clear();
                 self.interface.authoring.new_file_dialog = false;
                 self.open_file(path);
+            }
+            WorkspaceFileResult::CanonicalRustModuleCreated {
+                operation_id,
+                module_path,
+                module_contents: _,
+                module_fingerprint: _,
+                parent_path,
+                parent_contents,
+                parent_fingerprint,
+            } if self.pending_matches(&operation_id) => {
+                let module_path = PathBuf::from(module_path);
+                let parent_path = PathBuf::from(parent_path);
+                let Some(root) = self.workspace.root.as_deref() else {
+                    self.workspace.pending = None;
+                    self.workspace.status =
+                        "The workspace closed while the Rust module was being created.".to_owned();
+                    return;
+                };
+                let (Some(module_relative), Some(parent_relative)) = (
+                    relative_workspace_path(root, &module_path),
+                    relative_workspace_path(root, &parent_path),
+                ) else {
+                    self.workspace.pending = None;
+                    self.workspace.status =
+                        "Vapor returned a Rust module path outside the open workspace.".to_owned();
+                    return;
+                };
+                let expected_fingerprint =
+                    self.workspace
+                        .pending
+                        .as_ref()
+                        .and_then(|pending| match &pending.action {
+                            PendingAction::CreateCanonicalRustModule {
+                                parent_path: expected_path,
+                                expected_parent_fingerprint,
+                            } if expected_path == &parent_relative => {
+                                Some(expected_parent_fingerprint.clone())
+                            }
+                            _ => None,
+                        });
+                let Some(expected_fingerprint) = expected_fingerprint else {
+                    self.workspace.pending = None;
+                    self.workspace.status =
+                        "The Rust module creation result did not match the pending operation."
+                            .to_owned();
+                    return;
+                };
+                let parent_change = if let Some(document) =
+                    self.editor.documents.get_mut(&parent_relative)
+                {
+                    if document.fingerprint != expected_fingerprint {
+                        self.workspace.pending = None;
+                        self.workspace.status = "The parent module changed while creation completed; reload it before editing further.".to_owned();
+                        return;
+                    }
+                    let mut current = document.contents.clone();
+                    let module_name = module_relative
+                        .file_stem()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or_default();
+                    let declaration = format!("pub mod {module_name};");
+                    if !current.lines().any(|line| line.trim() == declaration) {
+                        if !current.is_empty() && !current.ends_with('\n') {
+                            current.push('\n');
+                        }
+                        if !current.is_empty() && !current.ends_with("\n\n") {
+                            current.push('\n');
+                        }
+                        current.push_str(&declaration);
+                        current.push('\n');
+                    }
+                    document.record_saved_contents(parent_contents, parent_fingerprint);
+                    document.contents = current.clone();
+                    document.version = document.version.saturating_add(1);
+                    Some((current, document.version))
+                } else {
+                    None
+                };
+                if let Some((contents, version)) = parent_change {
+                    self.did_change_document(&parent_relative, contents, version);
+                }
+                if !self.workspace.files.contains(&module_relative) {
+                    self.workspace.files.push(module_relative.clone());
+                    self.workspace.files.sort();
+                    self.workspace.file_tree = WorkspaceFileTree::new(&self.workspace.files);
+                    self.workspace.rust_crate_roots = rust_crate_roots(&self.workspace.files);
+                }
+                self.workspace.pending = None;
+                self.interface.authoring.new_rust_module_dialog = false;
+                self.workspace.status = format!(
+                    "Created canonical Rust module {}.",
+                    module_relative.display()
+                );
+                self.open_file(module_relative);
             }
             _ => {}
         }

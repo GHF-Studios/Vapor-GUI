@@ -1,6 +1,6 @@
 use super::{
     Document, IdeApp, PendingAction, WorkspaceSourceProject, canonical_rust_item_kind,
-    rust_semantics,
+    canonical_rust_module_parent, rust_semantics,
 };
 use eframe::egui;
 use std::collections::BTreeSet;
@@ -15,6 +15,8 @@ pub(super) struct WorkspaceAuthoring {
     pub(super) new_file_path: String,
     new_rust_item_dialog: bool,
     new_rust_item_name: String,
+    pub(super) new_rust_module_dialog: bool,
+    pub(super) new_rust_module_name: String,
     pub(super) new_content_dialog: bool,
     new_content_kind: String,
     new_content_id: String,
@@ -80,6 +82,56 @@ impl IdeApp {
         };
         self.interface.authoring.new_rust_item_name = kind.default_name().to_owned();
         self.interface.authoring.new_rust_item_dialog = true;
+    }
+
+    pub(super) fn open_canonical_rust_module_dialog(&mut self) {
+        let Some(path) = self.editor.selected_file.as_ref() else {
+            self.workspace.status =
+                "Open a Rust module under a Cargo `src` directory first.".to_owned();
+            return;
+        };
+        if !canonical_rust_module_parent(path, &self.workspace.rust_crate_roots) {
+            self.workspace.status =
+                "Open a Rust module under a Cargo `src` directory first.".to_owned();
+            return;
+        }
+        self.interface.authoring.new_rust_module_name = "components".to_owned();
+        self.interface.authoring.new_rust_module_dialog = true;
+    }
+
+    pub(super) fn create_canonical_rust_module(&mut self) {
+        if self.editor.documents.values().any(Document::is_dirty) {
+            self.workspace.status = "Save open files before creating a Rust module.".to_owned();
+            return;
+        }
+        let Some(parent_path) = self.editor.selected_file.clone() else {
+            self.workspace.status = "Open the parent Rust module first.".to_owned();
+            return;
+        };
+        let Some(parent) = self.editor.documents.get(&parent_path) else {
+            self.workspace.status = "Wait for the parent Rust module to finish opening.".to_owned();
+            return;
+        };
+        if !canonical_rust_module_parent(&parent_path, &self.workspace.rust_crate_roots) {
+            self.workspace.status =
+                "Canonical Rust modules belong inside a Cargo crate's `src` directory.".to_owned();
+            return;
+        }
+        let expected_parent_fingerprint = parent.fingerprint.clone();
+        self.send(
+            ClientAction::Workspace(WorkspaceAction::CreateCanonicalRustModule {
+                parent_path: parent_path.to_string_lossy().into_owned(),
+                expected_parent_fingerprint: expected_parent_fingerprint.clone(),
+                module_name: self.interface.authoring.new_rust_module_name.clone(),
+            }),
+            PendingAction::CreateCanonicalRustModule {
+                parent_path,
+                expected_parent_fingerprint,
+            },
+        );
+        if self.workspace.pending.is_some() {
+            self.interface.authoring.new_rust_module_dialog = false;
+        }
     }
 
     pub(super) fn create_workspace_file(&mut self) {
@@ -149,6 +201,57 @@ impl IdeApp {
     }
 
     pub(super) fn draw_authoring_dialogs(&mut self, context: &egui::Context) {
+        if self.interface.authoring.new_rust_module_dialog {
+            let mut open = true;
+            egui::Window::new("New canonical Rust module")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .open(&mut open)
+                .show(context, |ui| {
+                    if let Some(parent) = &self.editor.selected_file {
+                        ui.strong(format!("Child of {}", parent.display()));
+                    }
+                    ui.label("Creates the module file and registers it from this parent.");
+                    egui::ComboBox::from_label("Module")
+                        .selected_text(&self.interface.authoring.new_rust_module_name)
+                        .show_ui(ui, |ui| {
+                            for name in [
+                                "components",
+                                "constants",
+                                "events",
+                                "functions",
+                                "resources",
+                                "run_conditions",
+                                "statics",
+                                "systems",
+                                "types",
+                            ] {
+                                ui.selectable_value(
+                                    &mut self.interface.authoring.new_rust_module_name,
+                                    name.to_owned(),
+                                    format!("{name}.rs"),
+                                );
+                            }
+                        });
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(
+                                self.workspace.pending.is_none(),
+                                egui::Button::new("Create module"),
+                            )
+                            .clicked()
+                        {
+                            self.create_canonical_rust_module();
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.interface.authoring.new_rust_module_dialog = false;
+                        }
+                    });
+                });
+            self.interface.authoring.new_rust_module_dialog =
+                open && self.interface.authoring.new_rust_module_dialog;
+        }
         if self.interface.authoring.new_rust_item_dialog {
             let mut open = true;
             egui::Window::new("New Rust item")

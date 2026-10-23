@@ -181,6 +181,26 @@ pub(super) fn canonical_rust_item_kind(
         .flatten()
 }
 
+pub(super) fn canonical_rust_module_parent(
+    document: &Path,
+    crate_roots: &BTreeSet<PathBuf>,
+) -> bool {
+    document
+        .extension()
+        .is_some_and(|extension| extension == "rs")
+        && document
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some()
+        && crate_roots.iter().any(|root| {
+            document
+                .strip_prefix(root)
+                .ok()
+                .and_then(|relative| relative.components().next())
+                .is_some_and(|component| component.as_os_str() == "src")
+        })
+}
+
 pub(super) fn rust_crate_roots(files: &[PathBuf]) -> BTreeSet<PathBuf> {
     let manifests = files
         .iter()

@@ -501,7 +501,7 @@ impl LauncherApp {
                     self.latest_operation = Some(event);
                 }
                 ProtocolFrame::Event(ClientEvent::OperationOutput(output)) => {
-                    self.receive_operation_output(output);
+                    self.receive_operation_output(*output);
                 }
                 ProtocolFrame::Response(response) => {
                     if let Some(error) = response.error {

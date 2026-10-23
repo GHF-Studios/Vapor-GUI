@@ -4,9 +4,9 @@ use super::rust_semantics::{
 use super::{
     Document, EditPreviewApplyError, ProblemRow, ProblemStore, ReferenceLocation,
     VersionedEditPreview, apply_text_edits, apply_versioned_edit, canonical_rust_item_kind,
-    completion_items, cursor_position, document_tab_label, file_display_label, file_uri,
-    find_matches, hover_text, identifier_byte_range, lsp_position, nonempty_path,
-    operation_produces_build_diagnostics, path_from_file_uri,
+    canonical_rust_module_parent, completion_items, cursor_position, document_tab_label,
+    file_display_label, file_uri, find_matches, hover_text, identifier_byte_range, lsp_position,
+    nonempty_path, operation_produces_build_diagnostics, path_from_file_uri,
     pending_lsp_requests_for_cancellation, pending_request_snapshot_is_current,
     position_to_byte_offset, reference_locations, reference_request_matches_selection,
     relative_workspace_path, rust_analyzer_client_capabilities,
@@ -1578,6 +1578,31 @@ fn canonical_rust_templates_only_enable_inside_a_cargo_src_tree() {
     assert!(canonical_rust_item_kind(Path::new("crate/tests/components.rs"), &roots).is_none());
     assert!(canonical_rust_item_kind(Path::new("other/src/components.rs"), &roots).is_none());
     assert!(canonical_rust_item_kind(Path::new("crate/src/components.txt"), &roots).is_none());
+}
+
+#[test]
+fn canonical_rust_module_creation_only_enables_for_source_modules() {
+    let roots = BTreeSet::from([PathBuf::from("crate")]);
+    assert!(canonical_rust_module_parent(
+        Path::new("crate/src/lib.rs"),
+        &roots
+    ));
+    assert!(canonical_rust_module_parent(
+        Path::new("crate/src/game.rs"),
+        &roots
+    ));
+    assert!(!canonical_rust_module_parent(
+        Path::new("crate/tests/game.rs"),
+        &roots
+    ));
+    assert!(!canonical_rust_module_parent(
+        Path::new("other/src/lib.rs"),
+        &roots
+    ));
+    assert!(!canonical_rust_module_parent(
+        Path::new("crate/src/game.toml"),
+        &roots
+    ));
 }
 
 #[test]
