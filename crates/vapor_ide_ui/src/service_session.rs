@@ -124,6 +124,34 @@ impl IdeApp {
         );
     }
 
+    fn apply_opened_workspace_file(
+        &mut self,
+        path: PathBuf,
+        contents: String,
+        fingerprint: String,
+    ) {
+        self.editor.selected_file = Some(path.clone());
+        self.editor.documents.insert(
+            path.clone(),
+            Document {
+                saved_contents: contents.clone(),
+                contents,
+                fingerprint,
+                version: 1,
+            },
+        );
+        if let Some((version, contents)) = self
+            .editor
+            .documents
+            .get(&path)
+            .map(|document| (document.version as u64, document.contents.clone()))
+        {
+            self.index_local_semantic_document(&path, version, &contents);
+        }
+        self.did_open_document(&path);
+        self.request_document_symbols(&path);
+    }
+
     pub(super) fn save_file(&mut self) {
         let Some(path) = self.editor.selected_file.clone() else {
             return;
@@ -523,27 +551,7 @@ impl IdeApp {
                 contents,
                 fingerprint,
             } if self.pending_matches(&operation_id) => {
-                let path = PathBuf::from(path);
-                self.editor.selected_file = Some(path.clone());
-                self.editor.documents.insert(
-                    path.clone(),
-                    Document {
-                        saved_contents: contents.clone(),
-                        contents,
-                        fingerprint,
-                        version: 1,
-                    },
-                );
-                if let Some((version, contents)) = self
-                    .editor
-                    .documents
-                    .get(&path)
-                    .map(|document| (document.version as u64, document.contents.clone()))
-                {
-                    self.index_local_semantic_document(&path, version, &contents);
-                }
-                self.did_open_document(&path);
-                self.request_document_symbols(&path);
+                self.apply_opened_workspace_file(PathBuf::from(path), contents, fingerprint);
                 self.workspace.status = "File opened.".to_owned();
                 self.workspace.pending = None;
             }
@@ -591,8 +599,8 @@ impl IdeApp {
             WorkspaceFileResult::CanonicalRustModuleCreated {
                 operation_id,
                 module_path,
-                module_contents: _,
-                module_fingerprint: _,
+                module_contents,
+                module_fingerprint,
                 parent_path,
                 parent_contents,
                 parent_fingerprint,
@@ -676,11 +684,15 @@ impl IdeApp {
                 }
                 self.workspace.pending = None;
                 self.interface.authoring.new_rust_module_dialog = false;
+                self.apply_opened_workspace_file(
+                    module_relative.clone(),
+                    module_contents,
+                    module_fingerprint,
+                );
                 self.workspace.status = format!(
                     "Created canonical Rust module {}.",
                     module_relative.display()
                 );
-                self.open_file(module_relative);
             }
             _ => {}
         }
