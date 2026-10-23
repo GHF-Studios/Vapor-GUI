@@ -315,6 +315,36 @@ impl Default for InterfaceState {
     }
 }
 
+fn publish_local_semantic_results(
+    index: &mut SemanticWorkspaceIndex,
+    problems: &mut ProblemStore,
+    workspace_root: Option<&Path>,
+    path: &Path,
+    version: u64,
+    objects: Vec<SemanticObject>,
+    mut diagnostics: Vec<vapor_gui_core::StructuredDiagnostic>,
+) -> bool {
+    if !index.replace_document(path.to_path_buf(), version, objects) {
+        return false;
+    }
+    if let Some(root) = workspace_root
+        && let Some(relative_path) = relative_workspace_path(root, path)
+    {
+        attach_document_context(&mut diagnostics, root, version);
+        if diagnostics.is_empty() {
+            problems
+                .remove_source_diagnostics(&relative_path, vapor_gui_core::DiagnosticOrigin::Vapor);
+        } else {
+            problems.replace_source_diagnostics(
+                relative_path,
+                vapor_gui_core::DiagnosticOrigin::Vapor,
+                diagnostics,
+            );
+        }
+    }
+    true
+}
+
 pub struct IdeApp {
     service: ServiceState,
     workspace: WorkspaceState,

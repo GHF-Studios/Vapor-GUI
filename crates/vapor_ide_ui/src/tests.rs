@@ -8,12 +8,12 @@ use super::{
     file_display_label, file_uri, find_matches, hover_text, identifier_byte_range, lsp_position,
     nonempty_path, operation_produces_build_diagnostics, path_from_file_uri,
     pending_lsp_requests_for_cancellation, pending_request_snapshot_is_current,
-    position_to_byte_offset, reference_locations, reference_request_matches_selection,
-    relative_workspace_path, rust_analyzer_client_capabilities,
-    rust_analyzer_initialization_options, rust_crate_roots, rust_label_parts,
-    semantic_object_byte_range, semantic_source_limit_diagnostic, shortest_rust_label,
-    toml_parse_diagnostic, workspace_diagnostic_path, workspace_symbol_request_is_current,
-    workspace_tree_ordering, workspace_versions_match,
+    position_to_byte_offset, publish_local_semantic_results, reference_locations,
+    reference_request_matches_selection, relative_workspace_path,
+    rust_analyzer_client_capabilities, rust_analyzer_initialization_options, rust_crate_roots,
+    rust_label_parts, semantic_object_byte_range, semantic_source_limit_diagnostic,
+    shortest_rust_label, toml_parse_diagnostic, workspace_diagnostic_path,
+    workspace_symbol_request_is_current, workspace_tree_ordering, workspace_versions_match,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -264,6 +264,53 @@ fn problem_rows_materialize_only_the_visible_virtualized_range() {
     assert_eq!(visible[0].diagnostic.message, "9998");
     assert_eq!(visible[1].diagnostic.message, "9999");
     assert_eq!(visible[2].diagnostic.message, "build row");
+}
+
+#[test]
+fn stale_local_semantic_results_cannot_replace_newer_diagnostics() {
+    let root = Path::new("/workspace");
+    let path = root.join("scripts/main.rhai");
+    let mut index = vapor_gui_core::semantic::SemanticWorkspaceIndex::default();
+    let mut problems = ProblemStore::default();
+    let diagnostic = |message: &str| vapor_gui_core::StructuredDiagnostic {
+        origin: vapor_gui_core::DiagnosticOrigin::Vapor,
+        severity: vapor_gui_core::DiagnosticSeverity::Error,
+        code: Some("rhai.parse".to_owned()),
+        message: message.to_owned(),
+        rendered: None,
+        primary: None,
+        related: Vec::new(),
+        raw_payload: message.to_owned(),
+        context: Default::default(),
+    };
+
+    assert!(publish_local_semantic_results(
+        &mut index,
+        &mut problems,
+        Some(root),
+        &path,
+        2,
+        Vec::new(),
+        vec![diagnostic("current diagnostic")],
+    ));
+    assert!(!publish_local_semantic_results(
+        &mut index,
+        &mut problems,
+        Some(root),
+        &path,
+        1,
+        Vec::new(),
+        vec![diagnostic("stale diagnostic")],
+    ));
+
+    assert_eq!(
+        index.document(&path).map(|document| document.version),
+        Some(2)
+    );
+    let rows = problems.rows();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].diagnostic.message, "current diagnostic");
+    assert_eq!(rows[0].diagnostic.context.document_version, Some(2));
 }
 
 #[test]

@@ -1101,56 +1101,37 @@ impl IdeApp {
         source: &str,
     ) {
         if source.len() > vapor_gui_core::semantic::MAX_SEMANTIC_DOCUMENT_BYTES {
-            self.semantic
-                .index
-                .replace_document(path.to_path_buf(), version, Vec::new());
-            if let Some(root) = self.workspace.root.as_deref()
-                && let Some(relative_path) = relative_workspace_path(root, path)
-            {
-                let mut diagnostics = vec![semantic_source_limit_diagnostic()];
-                attach_document_context(&mut diagnostics, root, version);
-                self.semantic.problems.replace_source_diagnostics(
-                    relative_path,
-                    vapor_gui_core::DiagnosticOrigin::Vapor,
-                    diagnostics,
-                );
+            let accepted = publish_local_semantic_results(
+                &mut self.semantic.index,
+                &mut self.semantic.problems,
+                self.workspace.root.as_deref(),
+                path,
+                version,
+                Vec::new(),
+                vec![semantic_source_limit_diagnostic()],
+            );
+            if accepted {
+                self.workspace.status = "Semantic indexing paused for this file because it exceeds 2 MiB; editing remains available.".to_owned();
             }
-            self.workspace.status = "Semantic indexing paused for this file because it exceeds 2 MiB; editing remains available.".to_owned();
             return;
         }
         let extension = path.extension().and_then(|extension| extension.to_str());
-        let relative_path = self
-            .workspace
-            .root
-            .as_deref()
-            .and_then(|root| relative_workspace_path(root, path));
         match extension {
             Some("rs") => {
                 let parsed = rust_semantics::parse_local_rust_semantic_document(path, source);
                 let rust_semantics::ParsedSemanticDocument { objects, truncated } = parsed;
                 let symbol_count = rust_semantics::semantic_object_count(&objects);
-                if let Some(relative_path) = relative_path {
-                    let mut diagnostics = rust_semantics::convention_diagnostics(path, &objects);
-                    if let Some(root) = self.workspace.root.as_deref() {
-                        attach_document_context(&mut diagnostics, root, version);
-                    }
-                    if diagnostics.is_empty() {
-                        self.semantic.problems.remove_source_diagnostics(
-                            &relative_path,
-                            vapor_gui_core::DiagnosticOrigin::Vapor,
-                        );
-                    } else {
-                        self.semantic.problems.replace_source_diagnostics(
-                            relative_path,
-                            vapor_gui_core::DiagnosticOrigin::Vapor,
-                            diagnostics,
-                        );
-                    }
-                }
-                self.semantic
-                    .index
-                    .replace_document(path.to_path_buf(), version, objects);
-                if truncated {
+                let diagnostics = rust_semantics::convention_diagnostics(path, &objects);
+                let accepted = publish_local_semantic_results(
+                    &mut self.semantic.index,
+                    &mut self.semantic.problems,
+                    self.workspace.root.as_deref(),
+                    path,
+                    version,
+                    objects,
+                    diagnostics,
+                );
+                if accepted && truncated {
                     self.workspace.status = format!(
                         "Rust outline is partial at {symbol_count} objects; editing remains available."
                     );
@@ -1158,100 +1139,67 @@ impl IdeApp {
             }
             Some("toml") => match toml_semantics::parse_toml_semantic_objects(path, source) {
                 Ok(objects) => {
-                    self.semantic
-                        .index
-                        .replace_document(path.to_path_buf(), version, objects);
-                    if let Some(relative_path) = relative_path {
-                        let mut diagnostics =
-                            toml_semantics::authored_manifest_diagnostics(path, source);
-                        if let Some(root) = self.workspace.root.as_deref() {
-                            attach_document_context(&mut diagnostics, root, version);
-                        }
-                        if diagnostics.is_empty() {
-                            self.semantic.problems.remove_source_diagnostics(
-                                &relative_path,
-                                vapor_gui_core::DiagnosticOrigin::Vapor,
-                            );
-                        } else {
-                            self.semantic.problems.replace_source_diagnostics(
-                                relative_path,
-                                vapor_gui_core::DiagnosticOrigin::Vapor,
-                                diagnostics,
-                            );
-                        }
-                    }
+                    let diagnostics = toml_semantics::authored_manifest_diagnostics(path, source);
+                    publish_local_semantic_results(
+                        &mut self.semantic.index,
+                        &mut self.semantic.problems,
+                        self.workspace.root.as_deref(),
+                        path,
+                        version,
+                        objects,
+                        diagnostics,
+                    );
                 }
                 Err(error) => {
-                    self.semantic
-                        .index
-                        .replace_document(path.to_path_buf(), version, Vec::new());
-                    if let Some(relative_path) = relative_path {
-                        let mut diagnostics = vec![toml_parse_diagnostic(path, source, &error)];
-                        if let Some(root) = self.workspace.root.as_deref() {
-                            attach_document_context(&mut diagnostics, root, version);
-                        }
-                        self.semantic.problems.replace_source_diagnostics(
-                            relative_path,
-                            vapor_gui_core::DiagnosticOrigin::Vapor,
-                            diagnostics,
-                        );
-                    }
+                    publish_local_semantic_results(
+                        &mut self.semantic.index,
+                        &mut self.semantic.problems,
+                        self.workspace.root.as_deref(),
+                        path,
+                        version,
+                        Vec::new(),
+                        vec![toml_parse_diagnostic(path, source, &error)],
+                    );
                 }
             },
             Some("xml") => match xml_semantics::parse_xml_semantic_objects(path, source) {
                 Ok(objects) => {
-                    self.semantic
-                        .index
-                        .replace_document(path.to_path_buf(), version, objects);
-                    if let Some(relative_path) = relative_path {
-                        self.semantic.problems.remove_source_diagnostics(
-                            &relative_path,
-                            vapor_gui_core::DiagnosticOrigin::Vapor,
-                        );
-                    }
+                    publish_local_semantic_results(
+                        &mut self.semantic.index,
+                        &mut self.semantic.problems,
+                        self.workspace.root.as_deref(),
+                        path,
+                        version,
+                        objects,
+                        Vec::new(),
+                    );
                 }
                 Err(error) => {
-                    self.semantic
-                        .index
-                        .replace_document(path.to_path_buf(), version, Vec::new());
-                    if let Some(relative_path) = relative_path {
-                        let mut diagnostics = vec![xml_parse_diagnostic(path, source, &error)];
-                        if let Some(root) = self.workspace.root.as_deref() {
-                            attach_document_context(&mut diagnostics, root, version);
-                        }
-                        self.semantic.problems.replace_source_diagnostics(
-                            relative_path,
-                            vapor_gui_core::DiagnosticOrigin::Vapor,
-                            diagnostics,
-                        );
-                    }
+                    publish_local_semantic_results(
+                        &mut self.semantic.index,
+                        &mut self.semantic.problems,
+                        self.workspace.root.as_deref(),
+                        path,
+                        version,
+                        Vec::new(),
+                        vec![xml_parse_diagnostic(path, source, &error)],
+                    );
                 }
             },
             Some("rhai") => {
                 let objects =
                     vapor_gui_core::rhai_semantics::parse_rhai_semantic_objects(path, source);
-                self.semantic
-                    .index
-                    .replace_document(path.to_path_buf(), version, objects);
-                if let Some(relative_path) = relative_path {
-                    let mut diagnostics =
-                        vapor_gui_core::rhai_semantics::rhai_structure_diagnostics(path, source);
-                    if let Some(root) = self.workspace.root.as_deref() {
-                        attach_document_context(&mut diagnostics, root, version);
-                    }
-                    if diagnostics.is_empty() {
-                        self.semantic.problems.remove_source_diagnostics(
-                            &relative_path,
-                            vapor_gui_core::DiagnosticOrigin::Vapor,
-                        );
-                    } else {
-                        self.semantic.problems.replace_source_diagnostics(
-                            relative_path,
-                            vapor_gui_core::DiagnosticOrigin::Vapor,
-                            diagnostics,
-                        );
-                    }
-                }
+                let diagnostics =
+                    vapor_gui_core::rhai_semantics::rhai_structure_diagnostics(path, source);
+                publish_local_semantic_results(
+                    &mut self.semantic.index,
+                    &mut self.semantic.problems,
+                    self.workspace.root.as_deref(),
+                    path,
+                    version,
+                    objects,
+                    diagnostics,
+                );
             }
             _ => {}
         }
