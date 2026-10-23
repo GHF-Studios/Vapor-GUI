@@ -473,6 +473,7 @@ impl IdeApp {
                 .clicked()
             {
                 self.semantic.explorer_symbols = false;
+                self.semantic.pending_workspace_symbol = None;
             }
             if ui
                 .selectable_label(self.semantic.explorer_symbols, "Structure")
@@ -505,7 +506,7 @@ impl IdeApp {
             let symbol_query = self.workspace.file_query.trim().to_owned();
             self.request_workspace_symbols(&symbol_query);
             let mut requested_symbol = None;
-            let mut requested_location = None;
+            let mut requested_workspace_symbol = None;
             let mut outline_budget = semantic_view::SemanticRenderBudget::default();
             egui::ScrollArea::vertical()
                 .id_salt("ide-semantic-symbol-tree")
@@ -531,11 +532,7 @@ impl IdeApp {
                                 object.range.start.line.saturating_add(1),
                             ));
                             if response.clicked() {
-                                requested_location = Some((
-                                    object.id.document.clone(),
-                                    object.range.start.line as usize,
-                                    object.range.start.character as usize,
-                                ));
+                                requested_workspace_symbol = Some(object.clone());
                             }
                         }
                     }
@@ -584,6 +581,7 @@ impl IdeApp {
                     }
                 });
             if let Some(reference) = requested_symbol {
+                self.semantic.pending_workspace_symbol = None;
                 if self.semantic.selected.as_ref() != Some(&reference) {
                     self.language_server.references.clear();
                     self.language_server.references_omitted = 0;
@@ -599,9 +597,9 @@ impl IdeApp {
                     position.character as usize,
                 );
             }
-            if let Some((path, line, character)) = requested_location {
+            if let Some(symbol) = requested_workspace_symbol {
                 self.semantic.selected = None;
-                self.navigate_to_workspace_location(&path, line, character);
+                self.navigate_to_workspace_symbol(&symbol);
             }
         } else {
             let mut requested_file = None;
@@ -634,6 +632,7 @@ impl IdeApp {
                 });
             if let Some(path) = requested_file {
                 self.semantic.selected = None;
+                self.semantic.pending_workspace_symbol = None;
                 self.open_file(path);
             }
         }

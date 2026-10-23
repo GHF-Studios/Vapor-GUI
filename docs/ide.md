@@ -15,8 +15,11 @@ switching workspaces or running a managed workspace operation.
 Use **Files** to browse the workspace or **Structure** to browse semantic
 outlines for open files. Typing in Structure also searches Rust declarations
 across the workspace when Rust Analyzer is connected; other format outlines are
-available after opening those files. Rust files use module labels without `.rs`; `mod.rs` uses its
-module path, adding crate context when duplicate paths need disambiguation.
+available after opening those files. Selecting a workspace search result opens
+its current source and selects the matching declaration in the Inspector; if
+the declaration moved, disappeared, or remains ambiguous, the IDE declines to
+select it. Rust files use module labels without `.rs`; `mod.rs` uses its module
+path, adding crate context when duplicate paths need disambiguation.
 Ordinary workspace folders sort before files. Within Cargo crate roots, files
 and directories follow one alphabetical order.
 
@@ -104,5 +107,6 @@ file-creation/deletion edits are rejected.
 - Create content projects in Studio's **Create** workflow. That service-owned
   operation registers the project in `Workspace.vapor.toml` and produces its
   role manifest and Cargo files together; the IDE does not create detached role
-  manifests. Structured TOML authoring and atomic creation of new Rust modules
-  remain future work.
+  manifests. The IDE's **File → New Vapor content** operation uses this same
+  service action, then refreshes the workspace and opens the created manifest.
+  More complete structured manifest editing remains future work.

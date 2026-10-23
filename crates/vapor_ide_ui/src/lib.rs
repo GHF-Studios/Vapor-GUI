@@ -268,6 +268,7 @@ struct SemanticWorkbenchState {
     index: SemanticWorkspaceIndex,
     match_cache: semantic_view::SemanticMatchCache,
     selected: Option<SemanticObjectRef>,
+    pending_workspace_symbol: Option<SemanticObject>,
     explorer_symbols: bool,
     edit_preview: Option<VersionedEditPreview>,
     workspace_edit_preview: Option<Vec<VersionedEditPreview>>,

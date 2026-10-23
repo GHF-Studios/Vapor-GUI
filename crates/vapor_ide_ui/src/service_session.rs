@@ -66,6 +66,7 @@ impl IdeApp {
         }
         self.stop_language_server();
         self.semantic.problems.clear();
+        self.semantic.pending_workspace_symbol = None;
         self.language_server.workspace_symbols.clear();
         self.language_server.workspace_symbol_query = None;
         self.language_server.code_actions.clear();
@@ -209,6 +210,14 @@ impl IdeApp {
         self.semantic.index.invalidate_document(path);
         if self
             .semantic
+            .pending_workspace_symbol
+            .as_ref()
+            .is_some_and(|symbol| symbol.id.document == path)
+        {
+            self.semantic.pending_workspace_symbol = None;
+        }
+        if self
+            .semantic
             .selected
             .as_ref()
             .is_some_and(|selected| selected.id.document == path)
@@ -345,6 +354,7 @@ impl IdeApp {
                         self.editor.documents.clear();
                         self.semantic.index = SemanticWorkspaceIndex::default();
                         self.semantic.selected = None;
+                        self.semantic.pending_workspace_symbol = None;
                         self.editor.selected_file = None;
                         self.start_language_server();
                         self.workspace.status = format!("Opened {}", root.display());

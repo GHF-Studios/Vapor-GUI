@@ -872,6 +872,104 @@ fn rust_workspace_symbols_are_project_scoped_and_keep_source_ranges() {
 }
 
 #[test]
+fn workspace_search_selection_resolves_to_the_current_document_semantic_object() {
+    let workspace_result = serde_json::json!([{
+        "name": "Ship",
+        "kind": 23,
+        "containerName": "game::components",
+        "location": {
+            "uri": "file:///fixture/workspace/src/components.rs",
+            "range": {
+                "start": {"line": 1, "character": 11},
+                "end": {"line": 1, "character": 15}
+            }
+        }
+    }]);
+    let mut target = super::rust_semantics::parse_workspace_symbols(
+        &workspace_result,
+        Path::new("/fixture/workspace"),
+    )
+    .remove(0);
+    target.id.document = PathBuf::from("/fixture/workspace/src/components.rs");
+
+    let source = "#[derive(bevy::prelude::Component)]\npub struct Ship;\n";
+    let document_result = serde_json::json!([{
+        "name": "Ship",
+        "kind": 23,
+        "range": {
+            "start": {"line": 0, "character": 0},
+            "end": {"line": 1, "character": 15}
+        },
+        "selectionRange": {
+            "start": {"line": 1, "character": 11},
+            "end": {"line": 1, "character": 15}
+        }
+    }]);
+    let parsed = super::rust_semantics::parse_semantic_document_symbols(
+        &document_result,
+        &target.id.document,
+        8,
+        source,
+    );
+
+    let selected =
+        super::rust_semantics::resolve_workspace_symbol_selection(&parsed.objects, &target, 8)
+            .expect("workspace result should resolve to the current semantic declaration");
+    assert_eq!(selected.document_version, 8);
+    assert_eq!(selected.id.path, ["Ship"]);
+    assert_eq!(parsed.objects[0].kind, SemanticObjectKind::Component);
+}
+
+#[test]
+fn workspace_search_selection_rejects_ambiguous_same_name_declarations() {
+    let response = serde_json::json!([{
+        "name": "Ship",
+        "kind": 23,
+        "containerName": "game::components",
+        "location": {
+            "uri": "file:///fixture/workspace/src/components.rs",
+            "range": {
+                "start": {"line": 1, "character": 11},
+                "end": {"line": 1, "character": 15}
+            }
+        }
+    }]);
+    let target =
+        super::rust_semantics::parse_workspace_symbols(&response, Path::new("/fixture/workspace"))
+            .remove(0);
+    let range = vapor_gui_core::semantic::SemanticRange {
+        start: vapor_gui_core::semantic::SemanticPosition {
+            line: 1,
+            character: 0,
+        },
+        end: vapor_gui_core::semantic::SemanticPosition {
+            line: 1,
+            character: 20,
+        },
+    };
+    let declaration = |container: &str| vapor_gui_core::semantic::SemanticObject {
+        id: vapor_gui_core::semantic::SemanticObjectId::new(
+            "rust",
+            "src/components.rs",
+            vec![container.to_owned(), "Ship".to_owned()],
+        ),
+        kind: SemanticObjectKind::Component,
+        name: "Ship".to_owned(),
+        detail: None,
+        range,
+        selection_range: range,
+        attributes: Vec::new(),
+        children: Vec::new(),
+    };
+    let candidates = vec![declaration("first"), declaration("second")];
+
+    assert!(
+        super::rust_semantics::resolve_workspace_symbol_selection(&candidates, &target, 2)
+            .is_none()
+    );
+}
+
+#[test]
 fn superseded_document_symbol_requests_are_scoped_to_the_same_file() {
     let pending = |request, path: &str| super::PendingLspRequest {
         request,

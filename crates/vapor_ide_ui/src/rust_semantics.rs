@@ -1144,6 +1144,80 @@ pub(super) fn parse_workspace_symbols(
         .collect()
 }
 
+pub(super) fn resolve_workspace_symbol_selection(
+    document_symbols: &[SemanticObject],
+    workspace_symbol: &SemanticObject,
+    document_version: u64,
+) -> Option<vapor_gui_core::semantic::SemanticObjectRef> {
+    fn collect<'a>(
+        objects: &'a [SemanticObject],
+        target: &SemanticObject,
+        candidates: &mut Vec<(&'a SemanticObject, usize)>,
+    ) {
+        for object in objects {
+            let suffix_length = object
+                .id
+                .path
+                .iter()
+                .rev()
+                .zip(target.id.path.iter().rev())
+                .take_while(|(left, right)| left == right)
+                .count();
+            if object.id.document == target.id.document
+                && object.name == target.name
+                && workspace_symbol_kind_matches(target.kind, object.kind)
+                && suffix_length > 0
+                && semantic_ranges_overlap(object.range, target.range)
+            {
+                candidates.push((object, suffix_length));
+            }
+            collect(&object.children, target, candidates);
+        }
+    }
+
+    let mut candidates = Vec::new();
+    collect(document_symbols, workspace_symbol, &mut candidates);
+    let best_score = candidates.iter().map(|(_, score)| *score).max()?;
+    let mut best = candidates
+        .into_iter()
+        .filter(|(_, score)| *score == best_score)
+        .map(|(object, _)| object);
+    let selected = best.next()?;
+    best.next()
+        .is_none()
+        .then(|| selected.reference(document_version))
+}
+
+fn workspace_symbol_kind_matches(
+    workspace_kind: SemanticObjectKind,
+    document_kind: SemanticObjectKind,
+) -> bool {
+    workspace_kind == document_kind
+        || matches!(
+            (workspace_kind, document_kind),
+            (
+                SemanticObjectKind::Struct,
+                SemanticObjectKind::Component
+                    | SemanticObjectKind::Resource
+                    | SemanticObjectKind::Event
+            ) | (
+                SemanticObjectKind::Function,
+                SemanticObjectKind::System | SemanticObjectKind::RunCondition
+            )
+        )
+}
+
+fn semantic_ranges_overlap(
+    left: vapor_gui_core::semantic::SemanticRange,
+    right: vapor_gui_core::semantic::SemanticRange,
+) -> bool {
+    fn position(position: vapor_gui_core::semantic::SemanticPosition) -> (u32, u32) {
+        (position.line, position.character)
+    }
+
+    position(left.start) <= position(right.end) && position(right.start) <= position(left.end)
+}
+
 fn parse_semantic_symbol(
     symbol: &serde_json::Value,
     document: &Path,

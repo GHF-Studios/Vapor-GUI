@@ -993,6 +993,56 @@ impl IdeApp {
         }
     }
 
+    pub(super) fn navigate_to_workspace_symbol(&mut self, symbol: &SemanticObject) {
+        let Some(root) = self.workspace.root.as_deref() else {
+            return;
+        };
+        let Ok(canonical_root) = root.canonicalize() else {
+            self.workspace.status = "The open workspace is no longer available.".to_owned();
+            return;
+        };
+        let relative_document = &symbol.id.document;
+        let Ok(document) = canonical_root.join(relative_document).canonicalize() else {
+            self.workspace.status =
+                "That search result no longer points to an existing source file.".to_owned();
+            return;
+        };
+        if !document.starts_with(&canonical_root) {
+            self.workspace.status =
+                "Rust Analyzer returned a symbol outside this workspace.".to_owned();
+            return;
+        }
+
+        let mut target = symbol.clone();
+        target.id.document = document.clone();
+        let indexed_document = self.semantic.index.document(&document);
+        if let Some(indexed_document) = indexed_document
+            && let Some(selection) = rust_semantics::resolve_workspace_symbol_selection(
+                &indexed_document.objects,
+                &target,
+                indexed_document.version,
+            )
+        {
+            self.semantic.selected = Some(selection);
+            self.semantic.pending_workspace_symbol = None;
+            self.navigate_to_workspace_location(
+                &document,
+                target.range.start.line as usize,
+                target.range.start.character as usize,
+            );
+            return;
+        }
+
+        self.semantic.pending_workspace_symbol = Some(target.clone());
+        self.navigate_to_workspace_location(
+            &document,
+            target.range.start.line as usize,
+            target.range.start.character as usize,
+        );
+        self.request_document_symbols(&document);
+        self.workspace.status = format!("Opening `{}` in the Inspector…", target.name);
+    }
+
     pub(super) fn index_local_semantic_document(
         &mut self,
         path: &Path,
@@ -1191,6 +1241,14 @@ impl IdeApp {
     }
 
     pub(super) fn did_change_document(&mut self, path: &Path, text: String, version: i32) {
+        if self
+            .semantic
+            .pending_workspace_symbol
+            .as_ref()
+            .is_some_and(|symbol| symbol.id.document == path)
+        {
+            self.semantic.pending_workspace_symbol = None;
+        }
         if self.language_server.code_action_request.is_some() {
             self.language_server.code_actions.clear();
             self.language_server.code_action_request = None;
@@ -1455,6 +1513,22 @@ impl IdeApp {
                             document.version as u64,
                             &document.contents,
                         );
+                        let pending_symbol_matches_document = self
+                            .semantic
+                            .pending_workspace_symbol
+                            .as_ref()
+                            .is_some_and(|symbol| {
+                                same_existing_workspace_path(&symbol.id.document, &request.path)
+                            });
+                        let pending_symbol_selection = pending_symbol_matches_document
+                            .then(|| {
+                                rust_semantics::resolve_workspace_symbol_selection(
+                                    &parsed.objects,
+                                    self.semantic.pending_workspace_symbol.as_ref()?,
+                                    document.version as u64,
+                                )
+                            })
+                            .flatten();
                         let symbol_count = parsed.objects.len();
                         let source_too_large = document.contents.len()
                             > vapor_gui_core::semantic::MAX_SEMANTIC_DOCUMENT_BYTES;
@@ -1495,6 +1569,16 @@ impl IdeApp {
                             document.version as u64,
                             parsed.objects,
                         );
+                        if pending_symbol_matches_document {
+                            self.semantic.pending_workspace_symbol = None;
+                            if let Some(selection) = pending_symbol_selection {
+                                self.semantic.selected = Some(selection);
+                                self.workspace.status =
+                                    "Workspace search result selected in the Inspector.".to_owned();
+                            } else {
+                                self.workspace.status = "That declaration changed or could not be matched in the current source. The search result was not selected.".to_owned();
+                            }
+                        }
                         if parsed.truncated {
                             self.workspace.status = if source_too_large {
                                 "Semantic indexing paused for this file because it exceeds 2 MiB; editing remains available.".to_owned()
