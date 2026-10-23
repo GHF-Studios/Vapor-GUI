@@ -4,7 +4,7 @@ use super::{
 };
 use eframe::egui;
 use std::collections::BTreeSet;
-use vapor_client_domain::ContentKind;
+use vapor_client_domain::{CanonicalRustModuleKind, ContentKind};
 use vapor_client_protocol::{
     AuthoringAction, ClientAction, WorkshopMetadataDraft, WorkspaceAction,
 };
@@ -16,7 +16,7 @@ pub(super) struct WorkspaceAuthoring {
     new_rust_item_dialog: bool,
     new_rust_item_name: String,
     pub(super) new_rust_module_dialog: bool,
-    pub(super) new_rust_module_name: String,
+    pub(super) new_rust_module_kind: CanonicalRustModuleKind,
     pub(super) new_content_dialog: bool,
     new_content_kind: String,
     new_content_id: String,
@@ -95,7 +95,7 @@ impl IdeApp {
                 "Open a Rust module under a Cargo `src` directory first.".to_owned();
             return;
         }
-        self.interface.authoring.new_rust_module_name = "components".to_owned();
+        self.interface.authoring.new_rust_module_kind = CanonicalRustModuleKind::Components;
         self.interface.authoring.new_rust_module_dialog = true;
     }
 
@@ -122,7 +122,7 @@ impl IdeApp {
             ClientAction::Workspace(WorkspaceAction::CreateCanonicalRustModule {
                 parent_path: parent_path.to_string_lossy().into_owned(),
                 expected_parent_fingerprint: expected_parent_fingerprint.clone(),
-                module_name: self.interface.authoring.new_rust_module_name.clone(),
+                module_kind: self.interface.authoring.new_rust_module_kind,
             }),
             PendingAction::CreateCanonicalRustModule {
                 parent_path,
@@ -214,23 +214,16 @@ impl IdeApp {
                     }
                     ui.label("Creates the module file and registers it from this parent.");
                     egui::ComboBox::from_label("Module")
-                        .selected_text(&self.interface.authoring.new_rust_module_name)
+                        .selected_text(format!(
+                            "{}.rs",
+                            self.interface.authoring.new_rust_module_kind.name()
+                        ))
                         .show_ui(ui, |ui| {
-                            for name in [
-                                "components",
-                                "constants",
-                                "events",
-                                "functions",
-                                "resources",
-                                "run_conditions",
-                                "statics",
-                                "systems",
-                                "types",
-                            ] {
+                            for kind in CanonicalRustModuleKind::ALL {
                                 ui.selectable_value(
-                                    &mut self.interface.authoring.new_rust_module_name,
-                                    name.to_owned(),
-                                    format!("{name}.rs"),
+                                    &mut self.interface.authoring.new_rust_module_kind,
+                                    kind,
+                                    format!("{}.rs", kind.name()),
                                 );
                             }
                         });
