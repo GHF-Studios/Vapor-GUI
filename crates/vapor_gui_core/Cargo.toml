@@ -9,6 +9,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 vapor_console_core = { path = "../../../Vapor/crates/vapor_console_core" }
 vapor_client_protocol = { path = "../../../Vapor/crates/vapor_client_protocol" }
+rhai = { version = "=1.26.1", default-features = false, features = ["std", "no_optimize"] }
 
 egui_code_editor = { version = "=0.2.24", default-features = false }
 

@@ -40,8 +40,12 @@ fields. TOML scalar values are not copied into this index. Every local adapter s
 4,096 objects and 64 nesting levels per document; capped outlines are marked in
 the Inspector. The Structure view caps rendered objects at 2,048 across all open
 files and asks the user to filter when the display limit is reached. Rhai also
-caps its token scan at 65,536 tokens and suppresses
-structural diagnostics when that scan is incomplete. XML files expose a
+caps its token scan at 65,536 tokens and suppresses syntax diagnostics when
+that scan is incomplete. For complete, bounded documents, the pinned Rhai
+parser compiles source into an AST to report syntax errors; the IDE never
+evaluates that AST or executes scripts. A precise delimiter finding takes
+precedence over the parser's follow-on error for the same malformed structure.
+XML files expose a
 nested element outline and selectable attribute names; attribute and text values
 stay in the source file and are not duplicated into semantic details. Both
 structured adapters retain source ranges for navigation.

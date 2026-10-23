@@ -164,8 +164,7 @@ pub fn parse_rhai_semantic_objects(document: &Path, source: &str) -> Vec<Semanti
     }]
 }
 
-/// Report bounded delimiter diagnostics without evaluating script expressions.
-/// This is deliberately a structural check, not a replacement Rhai parser.
+/// Report bounded Rhai parser and delimiter diagnostics without evaluating scripts.
 pub fn rhai_structure_diagnostics(document: &Path, source: &str) -> Vec<StructuredDiagnostic> {
     if source.len() > crate::semantic::MAX_SEMANTIC_DOCUMENT_BYTES {
         return Vec::new();
@@ -242,7 +241,73 @@ pub fn rhai_structure_diagnostics(document: &Path, source: &str) -> Vec<Structur
             format!("Unclosed '{}' delimiter", token.text),
         ));
     }
+    if diagnostics.is_empty() {
+        let mut engine = rhai::Engine::new();
+        engine.set_max_expr_depths(128, 64);
+        if let Err(error) = engine.compile(source) {
+            diagnostics.push(rhai_parse_diagnostic(document, source, &error));
+        }
+    }
     diagnostics
+}
+
+fn rhai_parse_diagnostic(
+    document: &Path,
+    source: &str,
+    error: &rhai::ParseError,
+) -> StructuredDiagnostic {
+    let position = error.position();
+    let primary = position
+        .line()
+        .and_then(|line| rhai_position_span(source, line, position.position().unwrap_or(1)))
+        .map(|span| {
+            let range = semantic_range_from_byte_span(source, span);
+            DiagnosticSpan {
+                file: document.to_string_lossy().into_owned(),
+                start_line: range.start.line.saturating_add(1),
+                start_column: range.start.character.saturating_add(1),
+                end_line: range.end.line.saturating_add(1),
+                end_column: range.end.character.saturating_add(1),
+                primary: true,
+                label: Some("Rhai syntax error".to_owned()),
+            }
+        });
+    let message = format!("Rhai syntax error: {error}");
+    StructuredDiagnostic {
+        origin: DiagnosticOrigin::Vapor,
+        severity: DiagnosticSeverity::Error,
+        code: Some("rhai.parse".to_owned()),
+        message: message.clone(),
+        rendered: None,
+        primary,
+        related: Vec::new(),
+        raw_payload: error.to_string(),
+        context: DiagnosticContext {
+            domain: Some("rhai".to_owned()),
+            scope: DiagnosticScope::Document,
+            ..Default::default()
+        },
+    }
+}
+
+fn rhai_position_span(source: &str, line: usize, column: usize) -> Option<std::ops::Range<usize>> {
+    let line_start = source
+        .split_inclusive('\n')
+        .take(line.saturating_sub(1))
+        .map(str::len)
+        .sum::<usize>();
+    let line_text = source.get(line_start..)?.split('\n').next()?;
+    let character_offset = column.saturating_sub(1);
+    let start = line_text
+        .char_indices()
+        .nth(character_offset)
+        .map_or(line_text.len(), |(offset, _)| offset);
+    let end = line_text
+        .get(start..)?
+        .chars()
+        .next()
+        .map_or(start, |character| start + character.len_utf8());
+    Some((line_start + start)..(line_start + end))
 }
 
 fn structure_diagnostic(
@@ -653,10 +718,57 @@ mod tests {
                 .iter()
                 .any(|diagnostic| diagnostic.message == "Unclosed '{' delimiter")
         );
+        let structural = diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code.as_deref() == Some("rhai.structure"))
+            .collect::<Vec<_>>();
+        assert!(!structural.is_empty());
+        assert!(
+            structural
+                .iter()
+                .all(|diagnostic| diagnostic.raw_payload == diagnostic.message)
+        );
+    }
+
+    #[test]
+    fn structural_diagnostics_use_rhai_parser_for_invalid_expressions() {
+        let source = "let speed = ;";
+        let diagnostics = super::rhai_structure_diagnostics(Path::new("main.rhai"), source);
+
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.code.as_deref() == Some("rhai.parse")
+                && diagnostic.primary.is_some()
+                && diagnostic.context.domain.as_deref() == Some("rhai")
+        }));
+    }
+
+    #[test]
+    fn parser_diagnostic_positions_are_mapped_after_unicode_lines() {
+        let source = "// 🚀\nlet speed = ;";
+        let diagnostic = super::rhai_structure_diagnostics(Path::new("main.rhai"), source)
+            .into_iter()
+            .find(|diagnostic| diagnostic.code.as_deref() == Some("rhai.parse"))
+            .expect("Rhai parser diagnostic");
+        let span = diagnostic.primary.expect("parser source location");
+
+        assert_eq!(span.start_line, 2);
+        assert_eq!(span.start_column, 13);
+    }
+
+    #[test]
+    fn parser_does_not_duplicate_a_precise_delimiter_diagnostic() {
+        let diagnostics =
+            super::rhai_structure_diagnostics(Path::new("main.rhai"), "fn launch() { ] }");
+
         assert!(
             diagnostics
                 .iter()
-                .all(|diagnostic| diagnostic.raw_payload == diagnostic.message)
+                .any(|diagnostic| diagnostic.code.as_deref() == Some("rhai.structure"))
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code.as_deref() == Some("rhai.parse"))
         );
     }
 
