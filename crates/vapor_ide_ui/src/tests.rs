@@ -967,6 +967,15 @@ fn workspace_search_selection_rejects_ambiguous_same_name_declarations() {
         super::rust_semantics::resolve_workspace_symbol_selection(&candidates, &target, 2)
             .is_none()
     );
+
+    let mut moved_target = target;
+    moved_target.range.start.line = 3;
+    moved_target.range.end.line = 3;
+    assert!(
+        super::rust_semantics::resolve_workspace_symbol_selection(&candidates, &moved_target, 2)
+            .is_none(),
+        "the old search range must not resolve to an unrelated declaration"
+    );
 }
 
 #[test]

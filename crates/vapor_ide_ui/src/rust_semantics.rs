@@ -1215,7 +1215,7 @@ fn semantic_ranges_overlap(
         (position.line, position.character)
     }
 
-    position(left.start) <= position(right.end) && position(right.start) <= position(left.end)
+    position(left.start) < position(right.end) && position(right.start) < position(left.end)
 }
 
 fn parse_semantic_symbol(
