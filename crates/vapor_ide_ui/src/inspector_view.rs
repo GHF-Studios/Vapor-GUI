@@ -25,6 +25,40 @@ impl IdeApp {
             let mut diagnostic_navigation = None;
             let mut related_navigation = None;
             let mut quick_fix_request = None;
+            let mut registered_project_to_open = None;
+            if toml_semantics::is_registered_workspace_project_path(&object.id) {
+                let declared_path =
+                    self.editor
+                        .documents
+                        .get(&object.id.document)
+                        .and_then(|document| {
+                            toml_semantics::registered_workspace_project_path(
+                                &document.contents,
+                                &object.id,
+                            )
+                        });
+                let project_root = declared_path.as_deref().and_then(|path| {
+                    self.workspace.root.as_deref().and_then(|root| {
+                        diagnostics::resolve_registered_workspace_project(root, path)
+                    })
+                });
+                let project_available = project_root.is_some();
+                if ui
+                    .add_enabled(
+                        project_available,
+                        egui::Button::new("Open registered project"),
+                    )
+                    .on_hover_text(
+                        "Open the registered folder through Vapor's normal workspace workflow",
+                    )
+                    .clicked()
+                {
+                    registered_project_to_open = project_root.clone();
+                }
+                if !project_available {
+                    ui.weak("The registered folder is missing or outside this workspace.");
+                }
+            }
             if let Some(relative_path) = self
                 .workspace
                 .root
@@ -217,6 +251,9 @@ impl IdeApp {
             }
             if let Some(diagnostic) = quick_fix_request {
                 self.request_diagnostic_code_actions(&object.id.document, &diagnostic);
+            }
+            if let Some(project_root) = registered_project_to_open {
+                self.open_workspace(project_root);
             }
             if let Some(member) = selected_member {
                 if self.semantic.selected.as_ref() != Some(&member) {

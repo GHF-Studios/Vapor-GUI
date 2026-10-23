@@ -123,6 +123,64 @@ pub fn authored_manifest_diagnostics(
     }]
 }
 
+/// Resolve a registered project path from the authoritative open workspace
+/// document when the selected semantic object is its `project[n].path` field.
+/// The value is intentionally read on demand rather than copied into the
+/// semantic index.
+pub(super) fn registered_workspace_project_path(
+    source: &str,
+    id: &vapor_gui_core::semantic::SemanticObjectId,
+) -> Option<std::path::PathBuf> {
+    let (collection, index) = registered_project_index(id)?;
+    let document = source.parse::<toml_edit::ImDocument<String>>().ok()?;
+    let projects = match collection {
+        WorkspaceProjectCollection::Source => document.get("project")?.as_array_of_tables()?,
+        WorkspaceProjectCollection::Content => document
+            .get("workspace")?
+            .get("projects")?
+            .as_array_of_tables()?,
+    };
+    let path = projects.get(index)?.get("path")?.as_str()?;
+    Some(std::path::PathBuf::from(path))
+}
+
+pub(super) fn is_registered_workspace_project_path(
+    id: &vapor_gui_core::semantic::SemanticObjectId,
+) -> bool {
+    registered_project_index(id).is_some()
+}
+
+#[derive(Clone, Copy)]
+enum WorkspaceProjectCollection {
+    Source,
+    Content,
+}
+
+fn registered_project_index(
+    id: &vapor_gui_core::semantic::SemanticObjectId,
+) -> Option<(WorkspaceProjectCollection, usize)> {
+    if id.domain != "vapor-workspace" {
+        return None;
+    }
+    let (collection, index) = match id.path.as_slice() {
+        [project, index, field] if project == "project" && field == "path" => {
+            (WorkspaceProjectCollection::Source, index)
+        }
+        [workspace, projects, index, field]
+            if workspace == "workspace" && projects == "projects" && field == "path" =>
+        {
+            (WorkspaceProjectCollection::Content, index)
+        }
+        _ => return None,
+    };
+    let index = index
+        .strip_prefix('[')?
+        .strip_suffix(']')?
+        .parse::<usize>()
+        .ok()?;
+    Some((collection, index))
+}
+
 #[derive(Default)]
 struct SemanticBudget {
     remaining: usize,
@@ -456,6 +514,13 @@ fn workspace_semantic_attribute(path: &[String]) -> Option<&'static str> {
     if path_is(path, &["workspace", "repository"]) {
         return Some("Workspace source repository");
     }
+    if path.len() == 4
+        && path_starts_with(path, &["workspace", "projects"])
+        && path[2].starts_with('[')
+        && path[3] == "path"
+    {
+        return Some("Registered workspace content project path");
+    }
     if path_is(path, &["workspace", "binaries"]) {
         return Some("Workspace runtime executables");
     }
@@ -479,9 +544,9 @@ fn workspace_semantic_attribute(path: &[String]) -> Option<&'static str> {
         && path.get(1).is_some_and(|segment| segment.starts_with('['))
     {
         return match path.last().map(String::as_str) {
-            Some("name") => Some("Registered workspace project name"),
-            Some("path") => Some("Registered workspace project path"),
-            Some("schema") => Some("Workspace project schema"),
+            Some("name") => Some("Registered source project name"),
+            Some("path") => Some("Registered source project path"),
+            Some("schema") => Some("Source project schema"),
             _ => None,
         };
     }
@@ -567,7 +632,10 @@ pub(super) fn toml_parse_diagnostic(
 
 #[cfg(test)]
 mod tests {
-    use super::{authored_manifest_diagnostics, parse_toml_semantic_objects};
+    use super::{
+        authored_manifest_diagnostics, parse_toml_semantic_objects,
+        registered_workspace_project_path,
+    };
     use std::path::Path;
     use vapor_gui_core::semantic::SemanticObject;
 
@@ -726,7 +794,58 @@ path = "content/sample-game"
             find(&objects, "project[0].path")
                 .unwrap()
                 .attributes
-                .contains(&"Registered workspace project path".to_owned())
+                .contains(&"Registered source project path".to_owned())
+        );
+    }
+
+    #[test]
+    fn registered_project_path_is_resolved_from_its_semantic_identity() {
+        let source = "[[project]]\nname = \"first\"\npath = \"content/first\"\n\
+            [[project]]\nname = \"second\"\npath = \"content/second\"\n";
+        let objects = parse_toml_semantic_objects(Path::new("Workspace.vapor.toml"), source)
+            .expect("valid workspace manifest");
+        let selected = find(&objects, "project[1].path").expect("second project path");
+
+        assert_eq!(
+            registered_workspace_project_path(source, &selected.id).as_deref(),
+            Some(Path::new("content/second"))
+        );
+    }
+
+    #[test]
+    fn registered_project_path_does_not_accept_other_semantic_fields() {
+        let source = "[[project]]\nname = \"first\"\npath = \"content/first\"\n";
+        let objects = parse_toml_semantic_objects(Path::new("Workspace.vapor.toml"), source)
+            .expect("valid workspace manifest");
+        let name = find(&objects, "project[0].name").expect("project name");
+
+        assert!(registered_workspace_project_path(source, &name.id).is_none());
+        let wrong_domain = vapor_gui_core::semantic::SemanticObjectId::new(
+            "vapor-packagepack",
+            "Workspace.vapor.toml",
+            vec!["project".into(), "[0]".into(), "path".into()],
+        );
+        assert!(registered_workspace_project_path(source, &wrong_domain).is_none());
+    }
+
+    #[test]
+    fn workspace_content_project_paths_are_semantic_and_resolvable() {
+        let source = "[workspace]\nname = \"sample\"\n\
+            [[workspace.projects]]\npath = \"content/first\"\n\
+            [[workspace.projects]]\npath = \"content/second\"\n";
+        let objects = parse_toml_semantic_objects(Path::new("Workspace.vapor.toml"), source)
+            .expect("valid workspace manifest");
+        let selected = find(&objects, "workspace.projects[1].path")
+            .expect("second registered content project path");
+
+        assert!(
+            selected
+                .attributes
+                .contains(&"Registered workspace content project path".to_owned())
+        );
+        assert_eq!(
+            registered_workspace_project_path(source, &selected.id).as_deref(),
+            Some(Path::new("content/second"))
         );
     }
 

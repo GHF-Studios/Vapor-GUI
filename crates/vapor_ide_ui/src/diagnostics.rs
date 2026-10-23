@@ -297,6 +297,21 @@ pub(super) fn workspace_diagnostic_path(
         .map(Path::to_path_buf)
 }
 
+pub(super) fn resolve_registered_workspace_project(
+    workspace: &Path,
+    declared_path: &Path,
+) -> Option<PathBuf> {
+    if declared_path.as_os_str().is_empty() || declared_path.is_absolute() {
+        return None;
+    }
+    let workspace = workspace.canonicalize().ok()?;
+    let project = workspace.join(declared_path).canonicalize().ok()?;
+    if !project.starts_with(&workspace) || !project.is_dir() {
+        return None;
+    }
+    Some(project)
+}
+
 pub(super) fn operation_produces_build_diagnostics(action: &str) -> bool {
     matches!(
         action.rsplit('.').next(),
@@ -491,5 +506,31 @@ mod tests {
         assert_eq!(overlapping.len(), 1);
         assert_eq!(overlapping[0].code.as_deref(), Some("rust.test"));
         assert!(outside.is_empty());
+    }
+
+    #[test]
+    fn registered_project_resolution_requires_an_existing_directory_inside_workspace() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock after epoch")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("vapor-ide-project-{unique}"));
+        let workspace = base.join("workspace");
+        let project = workspace.join("content/game");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&project).expect("create in-workspace project");
+        std::fs::create_dir_all(&outside).expect("create outside directory");
+
+        assert_eq!(
+            resolve_registered_workspace_project(&workspace, Path::new("content/game")),
+            project.canonicalize().ok()
+        );
+        assert!(
+            resolve_registered_workspace_project(&workspace, Path::new("../outside")).is_none()
+        );
+        assert!(resolve_registered_workspace_project(&workspace, &outside).is_none());
+        assert!(resolve_registered_workspace_project(&workspace, Path::new("missing")).is_none());
+
+        std::fs::remove_dir_all(base).expect("remove test directories");
     }
 }
