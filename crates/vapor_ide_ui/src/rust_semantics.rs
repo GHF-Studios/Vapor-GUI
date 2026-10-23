@@ -488,6 +488,13 @@ pub(super) struct ParsedSemanticDocument {
     pub(super) truncated: bool,
 }
 
+pub(super) fn semantic_object_count(objects: &[SemanticObject]) -> usize {
+    objects
+        .iter()
+        .map(|object| 1 + semantic_object_count(&object.children))
+        .sum()
+}
+
 /// Build a lightweight Rust outline directly from the open source buffer.
 /// Rust Analyzer later replaces it with the resolved symbol tree, but the IDE
 /// can render declarations while that service is starting or unavailable.

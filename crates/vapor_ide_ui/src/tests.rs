@@ -686,6 +686,53 @@ fn local_rust_outline_bounds_nested_members_by_the_document_budget() {
 }
 
 #[test]
+fn local_rust_outline_preserves_nested_identity_and_unicode_ranges() {
+    let source =
+        "mod nested {\n    #[doc = \"🚀\"] pub struct Plain { pub name: &'static str }\n}\n";
+    let parsed = super::rust_semantics::parse_local_rust_semantic_document(
+        Path::new("src/components.rs"),
+        source,
+    );
+
+    let nested = &parsed.objects[0];
+    let plain = &nested.children[0];
+    let name = &plain.children[0];
+    assert_eq!(plain.id.path, ["nested", "Plain"]);
+    assert_eq!(name.id.path, ["nested", "Plain", "name"]);
+    assert_eq!(plain.selection_range.start.character, 29);
+    assert!(!parsed.truncated);
+
+    let diagnostics = super::rust_semantics::convention_diagnostics(
+        Path::new("src/components.rs"),
+        &parsed.objects,
+    );
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(
+        diagnostics[0].context.semantic_path.as_deref(),
+        Some("nested::Plain")
+    );
+    assert!(diagnostics[0].message.contains("belongs in `types.rs`"));
+}
+
+#[test]
+fn local_rust_outline_classifies_systems_and_run_conditions_from_their_modules() {
+    for (path, expected) in [
+        ("src/systems.rs", SemanticObjectKind::System),
+        ("src/run_conditions.rs", SemanticObjectKind::RunCondition),
+    ] {
+        let parsed = super::rust_semantics::parse_local_rust_semantic_document(
+            Path::new(path),
+            "pub fn update() -> bool { true }",
+        );
+        assert_eq!(parsed.objects[0].kind, expected);
+        assert!(
+            super::rust_semantics::convention_diagnostics(Path::new(path), &parsed.objects)
+                .is_empty()
+        );
+    }
+}
+
+#[test]
 fn rust_document_symbol_index_stops_pathological_nesting() {
     let mut nested = serde_json::json!({"name":"Leaf","kind":5});
     for index in (0..80).rev() {

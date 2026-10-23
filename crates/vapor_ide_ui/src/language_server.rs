@@ -1027,7 +1027,7 @@ impl IdeApp {
             Some("rs") => {
                 let parsed = rust_semantics::parse_local_rust_semantic_document(path, source);
                 let rust_semantics::ParsedSemanticDocument { objects, truncated } = parsed;
-                let symbol_count = objects.len();
+                let symbol_count = rust_semantics::semantic_object_count(&objects);
                 if let Some(relative_path) = relative_path {
                     let mut diagnostics = rust_semantics::convention_diagnostics(path, &objects);
                     if let Some(root) = self.workspace.root.as_deref() {
