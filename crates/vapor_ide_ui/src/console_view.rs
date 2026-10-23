@@ -61,6 +61,7 @@ impl IdeApp {
                         path,
                         action,
                         diagnostic,
+                        linked_diagnostics,
                     } in self.semantic.problems.rows_in_range(visible_rows)
                     {
                         let marker = match diagnostic.severity {
@@ -82,7 +83,18 @@ impl IdeApp {
                             .code
                             .as_deref()
                             .map_or(String::new(), |code| format!(" [{code}]"));
-                        let origin = diagnostic_origin_label(diagnostic.origin);
+                        let mut origins = Vec::with_capacity(linked_diagnostics.len() + 1);
+                        for origin in std::iter::once(diagnostic.origin).chain(
+                            linked_diagnostics
+                                .iter()
+                                .map(|diagnostic| diagnostic.origin),
+                        ) {
+                            let label = diagnostic_origin_label(origin);
+                            if !origins.contains(&label) {
+                                origins.push(label);
+                            }
+                        }
+                        let origins = origins.join(" + ");
                         let action = action
                             .filter(|action| !action.is_empty())
                             .map_or_else(String::new, |action| format!(" · {action}"));
@@ -115,7 +127,7 @@ impl IdeApp {
                                 egui::Button::selectable(
                                     false,
                                     format!(
-                                        "{marker} · {origin}{action}{code}  {location}  {}",
+                                        "{marker} · {origins}{action}{code}  {location}  {}",
                                         diagnostic.message
                                     ),
                                 )
@@ -123,6 +135,11 @@ impl IdeApp {
                             );
                             let response = response.on_hover_ui(|ui| {
                                 ui.label(diagnostic_details(diagnostic));
+                                for linked in linked_diagnostics {
+                                    ui.separator();
+                                    ui.strong(diagnostic_origin_label(linked.origin));
+                                    ui.label(diagnostic_details(linked));
+                                }
                             });
                             if response.clicked()
                                 && let Some(path) = &target_path

@@ -95,6 +95,7 @@ fn cargo_diagnostics_map_to_workspace_files_and_problem_rows_keep_provenance() {
             path: workspace_diagnostic_path(&root, "src/main.rs", &[PathBuf::from("src/main.rs")]),
             action: Some("workspace.test".to_owned()),
             diagnostic: build_diagnostic.clone(),
+            linked_diagnostics: Vec::new(),
         },
     );
     store.push_build(
@@ -103,6 +104,7 @@ fn cargo_diagnostics_map_to_workspace_files_and_problem_rows_keep_provenance() {
             path: workspace_diagnostic_path(&root, "src/main.rs", &[PathBuf::from("src/main.rs")]),
             action: Some("workspace.test".to_owned()),
             diagnostic: build_diagnostic,
+            linked_diagnostics: Vec::new(),
         },
     );
     assert_eq!(
@@ -144,6 +146,7 @@ fn cargo_diagnostics_map_to_workspace_files_and_problem_rows_keep_provenance() {
                 raw_payload: "{\"reason\":\"compiler-message\"}".to_owned(),
                 context: Default::default(),
             },
+            linked_diagnostics: Vec::new(),
         },
     );
     let rows = store.rows();
@@ -251,6 +254,7 @@ fn problem_rows_materialize_only_the_visible_virtualized_range() {
                 raw_payload: String::new(),
                 context: Default::default(),
             },
+            linked_diagnostics: Vec::new(),
         },
     );
 

@@ -424,6 +424,7 @@ impl IdeApp {
                                 path,
                                 action: Some(output.action.clone()),
                                 diagnostic,
+                                linked_diagnostics: Vec::new(),
                             },
                         );
                     }

@@ -13,12 +13,14 @@ pub(super) struct ProblemRow {
     pub(super) path: Option<PathBuf>,
     pub(super) action: Option<String>,
     pub(super) diagnostic: StructuredDiagnostic,
+    pub(super) linked_diagnostics: Vec<StructuredDiagnostic>,
 }
 
 pub(super) struct ProblemRowRef<'a> {
     pub(super) path: Option<&'a PathBuf>,
     pub(super) action: Option<&'a str>,
     pub(super) diagnostic: &'a StructuredDiagnostic,
+    pub(super) linked_diagnostics: &'a [StructuredDiagnostic],
 }
 
 pub(super) fn attach_document_context(
@@ -43,7 +45,7 @@ pub(super) fn attach_document_context(
 const MAX_BUILD_PROBLEMS: usize = 2_000;
 
 pub(super) struct ProblemStore {
-    source: BTreeMap<PathBuf, Vec<StructuredDiagnostic>>,
+    source: BTreeMap<PathBuf, Vec<ProblemRow>>,
     build_operation: Option<String>,
     build: Vec<ProblemRow>,
     omitted_build_problems: usize,
@@ -76,8 +78,30 @@ impl Default for ProblemStore {
 impl ProblemStore {
     pub(super) fn begin_build(&mut self, operation_id: &str) {
         if self.build_operation.as_deref() != Some(operation_id) {
+            for rows in self.source.values_mut() {
+                rows.retain_mut(remove_build_diagnostics);
+            }
+            self.source.retain(|_, rows| !rows.is_empty());
+            let mut remaining = Vec::new();
+            for mut row in std::mem::take(&mut self.build) {
+                if !remove_build_diagnostics(&mut row) {
+                    continue;
+                }
+                row.action = None;
+                if let Some(path) = row.path.clone() {
+                    let rows = self.source.entry(path).or_default();
+                    if !rows
+                        .iter_mut()
+                        .any(|existing| merge_problem_row(existing, &row))
+                    {
+                        rows.push(row);
+                    }
+                } else {
+                    remaining.push(row);
+                }
+            }
             self.build_operation = Some(operation_id.to_owned());
-            self.build.clear();
+            self.build = remaining;
             self.omitted_build_problems = 0;
             self.omitted_summary.message.clear();
         }
@@ -91,7 +115,7 @@ impl ProblemStore {
         if row.diagnostic.context.scope == vapor_gui_core::DiagnosticScope::Unspecified {
             row.diagnostic.context.scope = vapor_gui_core::DiagnosticScope::Operation;
         }
-        if self.build.contains(&row) {
+        if self.merge_report(&row) {
             return;
         }
         if self.build.len() < MAX_BUILD_PROBLEMS {
@@ -114,19 +138,31 @@ impl ProblemStore {
     }
 
     pub(super) fn remove_source_file(&mut self, path: &Path) {
-        self.source.remove(path);
+        let remove_source_origins = |row: &mut ProblemRow| {
+            remove_diagnostics(row, |origin| {
+                matches!(
+                    origin,
+                    DiagnosticOrigin::RustAnalyzer | DiagnosticOrigin::Vapor
+                )
+            })
+        };
+        if let Some(rows) = self.source.get_mut(path) {
+            rows.retain_mut(remove_source_origins);
+        }
+        self.source.retain(|_, rows| !rows.is_empty());
+        self.build
+            .retain_mut(|row| row.path.as_deref() != Some(path) || remove_source_origins(row));
     }
 
     pub(super) fn remove_source_diagnostics(&mut self, path: &Path, origin: DiagnosticOrigin) {
-        let remove_file = if let Some(diagnostics) = self.source.get_mut(path) {
-            diagnostics.retain(|diagnostic| diagnostic.origin != origin);
-            diagnostics.is_empty()
-        } else {
-            false
-        };
-        if remove_file {
-            self.source.remove(path);
+        if let Some(rows) = self.source.get_mut(path) {
+            rows.retain_mut(|row| remove_diagnostics(row, |candidate| candidate == origin));
         }
+        self.source.retain(|_, rows| !rows.is_empty());
+        self.build.retain_mut(|row| {
+            row.path.as_deref() != Some(path)
+                || remove_diagnostics(row, |candidate| candidate == origin)
+        });
     }
 
     pub(super) fn replace_source_diagnostics(
@@ -136,8 +172,16 @@ impl ProblemStore {
         diagnostics: Vec<StructuredDiagnostic>,
     ) {
         self.remove_source_diagnostics(&path, origin);
-        if !diagnostics.is_empty() {
-            self.source.entry(path).or_default().extend(diagnostics);
+        for diagnostic in diagnostics {
+            let row = ProblemRow {
+                path: Some(path.clone()),
+                action: None,
+                diagnostic,
+                linked_diagnostics: Vec::new(),
+            };
+            if !self.merge_report(&row) {
+                self.source.entry(path.clone()).or_default().push(row);
+            }
         }
     }
 
@@ -151,13 +195,26 @@ impl ProblemStore {
             .get(path)
             .into_iter()
             .flatten()
-            .filter(|diagnostic| diagnostic_overlaps_range(diagnostic, range))
+            .filter(|row| {
+                diagnostic_overlaps_range(&row.diagnostic, range)
+                    || row
+                        .linked_diagnostics
+                        .iter()
+                        .any(|diagnostic| diagnostic_overlaps_range(diagnostic, range))
+            })
+            .map(|row| &row.diagnostic)
             .collect::<Vec<_>>();
         diagnostics.extend(
             self.build
                 .iter()
                 .filter(|row| row.path.as_deref() == Some(path))
-                .filter(|row| diagnostic_overlaps_range(&row.diagnostic, range))
+                .filter(|row| {
+                    diagnostic_overlaps_range(&row.diagnostic, range)
+                        || row
+                            .linked_diagnostics
+                            .iter()
+                            .any(|diagnostic| diagnostic_overlaps_range(diagnostic, range))
+                })
                 .map(|row| &row.diagnostic),
         );
         diagnostics
@@ -189,9 +246,10 @@ impl ProblemStore {
                     diagnostics[local_start..local_end]
                         .iter()
                         .map(|diagnostic| ProblemRowRef {
-                            path: Some(path),
-                            action: None,
-                            diagnostic,
+                            path: diagnostic.path.as_ref().or(Some(path)),
+                            action: diagnostic.action.as_deref(),
+                            diagnostic: &diagnostic.diagnostic,
+                            linked_diagnostics: &diagnostic.linked_diagnostics,
                         }),
                 );
             }
@@ -209,6 +267,7 @@ impl ProblemStore {
                     path: row.path.as_ref(),
                     action: row.action.as_deref(),
                     diagnostic: &row.diagnostic,
+                    linked_diagnostics: &row.linked_diagnostics,
                 }),
         );
         offset = offset.saturating_add(self.build.len());
@@ -217,10 +276,124 @@ impl ProblemStore {
                 path: None,
                 action: None,
                 diagnostic: &self.omitted_summary,
+                linked_diagnostics: &[],
             });
         }
         rows
     }
+
+    fn merge_report(&mut self, incoming: &ProblemRow) -> bool {
+        if let Some(path) = incoming.path.as_deref()
+            && let Some(rows) = self.source.get_mut(path)
+            && rows.iter_mut().any(|row| merge_problem_row(row, incoming))
+        {
+            return true;
+        }
+        self.build
+            .iter_mut()
+            .any(|row| merge_problem_row(row, incoming))
+    }
+}
+
+fn merge_problem_row(existing: &mut ProblemRow, incoming: &ProblemRow) -> bool {
+    if existing.path != incoming.path {
+        return false;
+    }
+    if existing.diagnostic == incoming.diagnostic
+        || existing.linked_diagnostics.contains(&incoming.diagnostic)
+    {
+        return true;
+    }
+    if !diagnostics_correlate(&existing.diagnostic, &incoming.diagnostic)
+        && !existing
+            .linked_diagnostics
+            .iter()
+            .any(|diagnostic| diagnostics_correlate(diagnostic, &incoming.diagnostic))
+    {
+        return false;
+    }
+    if existing.action.is_none() {
+        existing.action.clone_from(&incoming.action);
+    }
+    if origin_priority(incoming.diagnostic.origin) > origin_priority(existing.diagnostic.origin) {
+        existing.linked_diagnostics.push(std::mem::replace(
+            &mut existing.diagnostic,
+            incoming.diagnostic.clone(),
+        ));
+    } else {
+        existing
+            .linked_diagnostics
+            .push(incoming.diagnostic.clone());
+    }
+    true
+}
+
+fn diagnostics_correlate(left: &StructuredDiagnostic, right: &StructuredDiagnostic) -> bool {
+    if left.severity != right.severity || left.code != right.code || left.message != right.message {
+        return false;
+    }
+    let (Some(left), Some(right)) = (&left.primary, &right.primary) else {
+        return false;
+    };
+    left.start_line == right.start_line
+        && left.start_column == right.start_column
+        && left.end_line == right.end_line
+        && left.end_column == right.end_column
+}
+
+fn origin_priority(origin: DiagnosticOrigin) -> u8 {
+    match origin {
+        DiagnosticOrigin::RustAnalyzer => 5,
+        DiagnosticOrigin::Rustc => 4,
+        DiagnosticOrigin::Cargo => 3,
+        DiagnosticOrigin::Rustdoc => 2,
+        DiagnosticOrigin::Vapor => 1,
+    }
+}
+
+fn remove_build_diagnostics(row: &mut ProblemRow) -> bool {
+    let has_build_diagnostic = [row.diagnostic.origin]
+        .into_iter()
+        .chain(
+            row.linked_diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.origin),
+        )
+        .any(|origin| {
+            matches!(
+                origin,
+                DiagnosticOrigin::Cargo | DiagnosticOrigin::Rustc | DiagnosticOrigin::Rustdoc
+            )
+        });
+    let remains = remove_diagnostics(row, |origin| {
+        matches!(
+            origin,
+            DiagnosticOrigin::Cargo | DiagnosticOrigin::Rustc | DiagnosticOrigin::Rustdoc
+        )
+    });
+    if has_build_diagnostic {
+        row.action = None;
+    }
+    remains
+}
+
+fn remove_diagnostics(
+    row: &mut ProblemRow,
+    mut should_remove: impl FnMut(DiagnosticOrigin) -> bool,
+) -> bool {
+    if should_remove(row.diagnostic.origin) {
+        let Some(index) = row
+            .linked_diagnostics
+            .iter()
+            .position(|diagnostic| !should_remove(diagnostic.origin))
+        else {
+            return false;
+        };
+        row.diagnostic = row.linked_diagnostics.remove(index);
+    }
+    row.linked_diagnostics
+        .retain(|diagnostic| !should_remove(diagnostic.origin));
+    true
 }
 
 fn diagnostic_overlaps_range(diagnostic: &StructuredDiagnostic, range: SemanticRange) -> bool {
@@ -423,6 +596,105 @@ mod tests {
     }
 
     #[test]
+    fn matching_language_and_build_reports_share_a_row_without_losing_evidence() {
+        let mut store = ProblemStore::default();
+        let mut language = source_diagnostic(5, 4, 10);
+        language.severity = DiagnosticSeverity::Error;
+        language.code = Some("E0425".to_owned());
+        language.message = "cannot find value `ship`".to_owned();
+        language.raw_payload = "rust-analyzer record".to_owned();
+        store.replace_source_diagnostics(
+            PathBuf::from("src/components.rs"),
+            DiagnosticOrigin::RustAnalyzer,
+            vec![language],
+        );
+
+        let mut cargo = source_diagnostic(5, 4, 10);
+        cargo.origin = DiagnosticOrigin::Cargo;
+        cargo.severity = DiagnosticSeverity::Error;
+        cargo.code = Some("E0425".to_owned());
+        cargo.message = "cannot find value `ship`".to_owned();
+        cargo.raw_payload = "cargo record".to_owned();
+        store.begin_build("build-1");
+        store.push_build(
+            "build-1",
+            ProblemRow {
+                path: Some(PathBuf::from("src/components.rs")),
+                action: Some("workspace.check".to_owned()),
+                diagnostic: cargo,
+                linked_diagnostics: Vec::new(),
+            },
+        );
+
+        let rows = store.rows();
+        assert_eq!(rows.len(), 1, "one issue should have one visible row");
+        assert_eq!(rows[0].diagnostic.origin, DiagnosticOrigin::RustAnalyzer);
+        assert_eq!(rows[0].action, Some("workspace.check"));
+        assert_eq!(rows[0].linked_diagnostics.len(), 1);
+        assert_eq!(
+            rows[0].linked_diagnostics[0].origin,
+            DiagnosticOrigin::Cargo
+        );
+        assert_eq!(
+            rows[0].linked_diagnostics[0]
+                .context
+                .operation_id
+                .as_deref(),
+            Some("build-1")
+        );
+        assert_eq!(rows[0].linked_diagnostics[0].raw_payload, "cargo record");
+
+        store.begin_build("build-2");
+        let rows = store.rows();
+        assert_eq!(rows.len(), 1, "the current source report survives rebuild");
+        assert!(rows[0].linked_diagnostics.is_empty());
+        assert_eq!(rows[0].action, None, "stale build action is cleared");
+    }
+
+    #[test]
+    fn language_report_arriving_after_build_report_becomes_the_primary_row() {
+        let mut store = ProblemStore::default();
+        store.begin_build("build-1");
+        let mut cargo = source_diagnostic(8, 2, 7);
+        cargo.origin = DiagnosticOrigin::Cargo;
+        cargo.raw_payload = "cargo payload".to_owned();
+        store.push_build(
+            "build-1",
+            ProblemRow {
+                path: Some(PathBuf::from("src/components.rs")),
+                action: Some("workspace.check".to_owned()),
+                diagnostic: cargo,
+                linked_diagnostics: Vec::new(),
+            },
+        );
+
+        let mut language = source_diagnostic(8, 2, 7);
+        language.origin = DiagnosticOrigin::RustAnalyzer;
+        language.raw_payload = "language payload".to_owned();
+        store.replace_source_diagnostics(
+            PathBuf::from("src/components.rs"),
+            DiagnosticOrigin::RustAnalyzer,
+            vec![language],
+        );
+
+        let rows = store.rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].diagnostic.origin, DiagnosticOrigin::RustAnalyzer);
+        assert_eq!(rows[0].linked_diagnostics.len(), 1);
+        assert_eq!(
+            rows[0].linked_diagnostics[0].origin,
+            DiagnosticOrigin::Cargo
+        );
+
+        store.begin_build("build-2");
+        let rows = store.rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].diagnostic.origin, DiagnosticOrigin::RustAnalyzer);
+        assert!(rows[0].linked_diagnostics.is_empty());
+        assert_eq!(rows[0].action, None);
+    }
+
+    #[test]
     fn semantic_inspector_includes_overlapping_build_diagnostics_for_the_document() {
         let mut store = ProblemStore::default();
         store.begin_build("build-1");
@@ -435,6 +707,7 @@ mod tests {
                 path: Some(PathBuf::from("src/components.rs")),
                 action: Some("check".to_owned()),
                 diagnostic: matching,
+                linked_diagnostics: Vec::new(),
             },
         );
         let mut other_document = source_diagnostic(5, 4, 10);
@@ -445,6 +718,7 @@ mod tests {
                 path: Some(PathBuf::from("src/systems.rs")),
                 action: Some("check".to_owned()),
                 diagnostic: other_document,
+                linked_diagnostics: Vec::new(),
             },
         );
 
