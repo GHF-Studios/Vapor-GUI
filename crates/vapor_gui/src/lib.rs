@@ -26,6 +26,7 @@ enum ModeArg {
     Chooser,
     Installer,
     Ide,
+    Cleanup,
 }
 
 impl From<ModeArg> for GuiMode {
@@ -37,6 +38,7 @@ impl From<ModeArg> for GuiMode {
             ModeArg::Chooser => Self::Chooser,
             ModeArg::Installer => Self::Installer,
             ModeArg::Ide => Self::Ide,
+            ModeArg::Cleanup => Self::Cleanup,
         }
     }
 }
@@ -53,6 +55,7 @@ pub fn run(default_mode: GuiMode) -> eframe::Result<()> {
         GuiMode::Chooser => run_product(ChooserProduct, launch),
         GuiMode::Installer => run_product(InstallerProduct, launch),
         GuiMode::Ide => run_product(IdeProduct, launch),
+        GuiMode::Cleanup => run_product(CleanupProduct, launch),
         GuiMode::Launcher | GuiMode::Play => run_product(LauncherProduct, launch),
         GuiMode::Studio => run_product(StudioProduct, launch),
     }
@@ -101,6 +104,8 @@ impl GuiProduct for LauncherProduct {
 struct InstallerProduct;
 
 struct IdeProduct;
+
+struct CleanupProduct;
 
 struct ChooserProduct;
 
@@ -209,6 +214,12 @@ impl eframe::App for ChooserApp {
                         "Open the command line for advanced work.",
                         "shell",
                     );
+                    self.product_row(
+                        ui,
+                        "Vapor Cleanup",
+                        "Review storage and remove selected generated data.",
+                        "cleanup",
+                    );
                 });
             });
 
@@ -268,6 +279,28 @@ impl GuiProduct for IdeProduct {
         launch: GuiLaunch,
     ) -> Box<dyn eframe::App> {
         Box::new(vapor_ide_ui::IdeApp::new(context, launch))
+    }
+}
+
+impl GuiProduct for CleanupProduct {
+    fn title(&self) -> &'static str {
+        "Vapor Cleanup"
+    }
+
+    fn window_size(&self) -> [f32; 2] {
+        [1040.0, 760.0]
+    }
+
+    fn minimum_window_size(&self) -> [f32; 2] {
+        [760.0, 520.0]
+    }
+
+    fn create(
+        &self,
+        _context: &eframe::CreationContext<'_>,
+        _launch: GuiLaunch,
+    ) -> Box<dyn eframe::App> {
+        Box::new(vapor_storage_ui::StorageApp::default())
     }
 }
 

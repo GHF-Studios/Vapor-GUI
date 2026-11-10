@@ -1,0 +1,8 @@
+[package]
+name = "vapor_storage_ui"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+eframe.workspace = true
+vapor_core = { path = "../../../Vapor/crates/vapor_core" }
