@@ -118,7 +118,7 @@ impl eframe::App for StorageApp {
                 self.refresh();
             }
         });
-        ui.weak("Review the canonical Vapor home. Source files, content, tools, and state stay protected.");
+        ui.weak("Review this Vapor installation. Source files, content, tools, and state stay protected.");
 
         if let Some((success, message)) = &self.message {
             let color = if *success {
@@ -141,7 +141,7 @@ impl eframe::App for StorageApp {
                     .strong()
                     .size(20.0),
             );
-            ui.label("logical size in the canonical Vapor home");
+            ui.label("logical size in this Vapor installation");
             if inventory.scan_incomplete {
                 ui.colored_label(
                     Color32::YELLOW,
