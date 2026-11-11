@@ -9,10 +9,8 @@ edition = "2024"
 [profile.dev]
 debug = "line-tables-only"
 
-[profile.full-debug]
-inherits = "dev"
-debug = true
+[profile.release]
+lto = "thin"
 
 [workspace.dependencies]
 eframe = "0.36.2"
-
