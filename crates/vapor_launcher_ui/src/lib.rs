@@ -10,7 +10,7 @@ use vapor_client_protocol::{
     CatalogAction, CatalogEntry, CatalogItemAction, CatalogItemRole, CatalogLocationKind,
     ClientAction, ClientEvent, Composition, CompositionAction, ContentKind, InstallationState,
     LibraryAction, OperationEvent, OperationOutputEvent, OperationPhase, OperationStatus,
-    ProtocolFrame, WorkshopAction, WorkshopItemSnapshot, WorkshopSnapshot,
+    ProtocolFrame, WorkshopAction, WorkshopItemSnapshot, WorkshopSnapshot, WorkspaceAction,
 };
 use vapor_gui_core::{ConsoleLevel, ConsoleRecord};
 
@@ -22,6 +22,7 @@ enum Page {
     Play,
     Library,
     Workshop,
+    Journeys,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -365,6 +366,10 @@ pub struct LauncherApp {
     latest_operation: Option<OperationEvent>,
     console: vapor_gui_core::console::ConsolePanelState,
     console_open: bool,
+    journey_error: Option<String>,
+    next_journey_observation: Instant,
+    journey_progress: Option<vapor_client_application::JourneyProgressSnapshot>,
+    demo_workspace: Option<std::path::PathBuf>,
 }
 
 impl LauncherApp {
@@ -397,6 +402,10 @@ impl LauncherApp {
             latest_operation: None,
             console: vapor_gui_core::console::ConsolePanelState::default(),
             console_open: false,
+            journey_error: None,
+            next_journey_observation: Instant::now(),
+            journey_progress: None,
+            demo_workspace: None,
         }
     }
 
@@ -498,6 +507,20 @@ impl LauncherApp {
                         );
                     }
                     self.status = operation_brief(&event);
+                    if matches!(event.status, OperationStatus::Succeeded) {
+                        match vapor_client_application::observe_successful_operation(
+                            &event.action,
+                            &event.id,
+                            event.composition_id.as_deref(),
+                        ) {
+                            Ok(Some(progress)) => {
+                                self.journey_progress = Some(progress);
+                                self.journey_error = None;
+                            }
+                            Ok(None) => {}
+                            Err(error) => self.journey_error = Some(error),
+                        }
+                    }
                     self.latest_operation = Some(event);
                 }
                 ProtocolFrame::Event(ClientEvent::OperationOutput(output)) => {
@@ -592,6 +615,160 @@ impl LauncherApp {
             page,
             self.workshop_kind,
         ));
+    }
+
+    fn observe_journey_state(&mut self) {
+        self.next_journey_observation = Instant::now() + Duration::from_secs(3);
+        if self.demo_workspace.is_none() {
+            match vapor_client_application::wheel_salvage_workspace() {
+                Ok(workspace) => self.demo_workspace = workspace,
+                Err(error) => self.journey_error = Some(error),
+            }
+        }
+        if let Some(snapshot) = self
+            .service
+            .as_ref()
+            .map(|service| service.latest_snapshot().clone())
+        {
+            if let Some(composition) = snapshot
+                .durable_state
+                .compositions
+                .compositions
+                .iter()
+                .find(|composition| {
+                    matches!(
+                        &composition.installation,
+                        InstallationState::Installed { .. }
+                    )
+                })
+                && let Err(error) =
+                    vapor_client_application::observe_installed_composition(&composition.id)
+            {
+                self.journey_error = Some(error);
+            }
+            let role = snapshot.installation_role;
+            if let Err(error) = vapor_client_application::observe_developer_toolchain(
+                &role.role,
+                role.rust_ready,
+                role.windows_gnu_target_ready,
+                role.windows_gnu_linker_ready,
+            ) {
+                self.journey_error = Some(error);
+            }
+        }
+        match vapor_client_application::journey_progress() {
+            Ok(progress) => {
+                self.journey_progress = Some(progress);
+                self.journey_error = None;
+            }
+            Err(error) => self.journey_error = Some(error),
+        }
+    }
+
+    fn journeys_page(&mut self, ui: &mut egui::Ui) {
+        if self.journey_progress.is_none() || Instant::now() >= self.next_journey_observation {
+            self.observe_journey_state();
+        }
+        ui.horizontal(|ui| {
+            ui.heading("Journeys");
+            if let Some(progress) = &self.journey_progress {
+                ui.separator();
+                ui.label(format!(
+                    "{} points · {} of {} quests",
+                    progress.points, progress.completed_quests, progress.total_quests
+                ));
+            }
+        });
+        ui.label("Guided paths through real Vapor workflows. Progress is shared with the CLI.");
+        if let Some(error) = &self.journey_error {
+            ui.colored_label(egui::Color32::LIGHT_RED, error);
+        }
+        let Some(progress) = self.journey_progress.clone() else {
+            ui.weak("Journey progress is not available yet.");
+            return;
+        };
+        for journey in progress.journeys {
+            egui::CollapsingHeader::new(journey.definition.title)
+                .default_open(true)
+                .show(ui, |ui| {
+                    ui.label(journey.definition.description);
+                    for quest in journey.quests {
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            match &quest.availability {
+                                vapor_client_application::QuestAvailability::Completed(_) => {
+                                    ui.colored_label(egui::Color32::LIGHT_GREEN, "✓ Done");
+                                }
+                                vapor_client_application::QuestAvailability::Available => {
+                                    ui.colored_label(egui::Color32::YELLOW, "Ready");
+                                }
+                                vapor_client_application::QuestAvailability::Locked(_) => {
+                                    ui.weak("Locked");
+                                }
+                            }
+                            ui.strong(quest.definition.title);
+                            ui.weak(format!("+{}", quest.definition.points));
+                        });
+                        ui.indent(quest.definition.id, |ui| {
+                            ui.label(quest.definition.description);
+                            match &quest.availability {
+                                vapor_client_application::QuestAvailability::Locked(required) => {
+                                    ui.weak(format!("Complete first: {}", required.join(", ")));
+                                }
+                                vapor_client_application::QuestAvailability::Available => {
+                                    match quest.definition.id {
+                                        "player.install-composition" => {
+                                            if ui.button("Choose a game").clicked() {
+                                                self.page = Page::Play;
+                                            }
+                                        }
+                                        "player.launch-composition" => {
+                                            if ui.button("Go to Play").clicked() {
+                                                self.page = Page::Play;
+                                            }
+                                        }
+                                        "developer.run-workspace" => {
+                                            if let Some(workspace) = self.demo_workspace.clone() {
+                                                if ui.button("Run Wheel Salvage Demo").clicked() {
+                                                    self.send(ClientAction::Workspace(WorkspaceAction::RunConfiguration {
+                                                        workspace_root: workspace.display().to_string(),
+                                                        configuration: "wheel-salvage".to_owned(),
+                                                        profiling: false,
+                                                    }));
+                                                }
+                                            } else {
+                                                ui.weak("The Vapor Examples source checkout is not available in Vapor Home/sources/Vapor-Client.");
+                                            }
+                                        }
+                                        "developer.review-content-boundary" => {
+                                            ui.weak("This learning step is confirmed by you; Vapor cannot observe that you read it.");
+                                            if ui.button("I’ve reviewed it").clicked() {
+                                                match vapor_client_application::confirm_journey_quest(quest.definition.id) {
+                                                    Ok(progress) => {
+                                                        self.journey_progress = Some(progress);
+                                                        self.journey_error = None;
+                                                    }
+                                                    Err(error) => self.journey_error = Some(error),
+                                                }
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                vapor_client_application::QuestAvailability::Completed(completion) => {
+                                    let evidence = match &completion.evidence {
+                                        vapor_client_application::QuestEvidence::InstalledComposition { composition_id } => format!("Observed installed composition: {composition_id}"),
+                                        vapor_client_application::QuestEvidence::SuccessfulOperation { action, .. } => format!("Vapor observed successful operation: {action}"),
+                                        vapor_client_application::QuestEvidence::DeveloperToolchainReady => "Observed managed Developer tools ready".to_owned(),
+                                        vapor_client_application::QuestEvidence::UserConfirmed => "Confirmed by you".to_owned(),
+                                    };
+                                    ui.weak(evidence);
+                                }
+                            }
+                        });
+                    }
+                });
+        }
     }
 
     fn play_page(&mut self, ui: &mut egui::Ui) {
@@ -1887,9 +2064,13 @@ impl eframe::App for LauncherApp {
                     (Page::Play, "Play"),
                     (Page::Library, "Library"),
                     (Page::Workshop, "Workshop"),
+                    (Page::Journeys, "Journeys"),
                 ] {
                     if ui.selectable_label(self.page == page, label).clicked() {
                         self.page = page;
+                        if page == Page::Journeys {
+                            self.next_journey_observation = Instant::now();
+                        }
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1907,6 +2088,7 @@ impl eframe::App for LauncherApp {
                 Page::Play => self.play_page(ui),
                 Page::Library => self.library_page(ui),
                 Page::Workshop => self.workshop_page(ui),
+                Page::Journeys => self.journeys_page(ui),
             });
             if let Some(event) = self.latest_operation.clone() {
                 vapor_gui_core::panel::Panel::new("Activity", |ui| {
