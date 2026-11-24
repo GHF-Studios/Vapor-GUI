@@ -22,6 +22,10 @@ path = "src/ide.rs"
 name = "vapor-installer-gui"
 path = "src/installer_gui.rs"
 
+[[bin]]
+name = "vapor-setup"
+path = "src/setup.rs"
+
 [dependencies]
 clap = { version = "4.6.1", features = ["derive"] }
 eframe.workspace = true

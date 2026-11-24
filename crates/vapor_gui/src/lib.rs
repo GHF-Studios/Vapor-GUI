@@ -23,6 +23,7 @@ enum ModeArg {
     Play,
     Chooser,
     Installer,
+    Setup,
     Ide,
 }
 
@@ -34,6 +35,7 @@ impl From<ModeArg> for GuiMode {
             ModeArg::Play => Self::Play,
             ModeArg::Chooser => Self::Chooser,
             ModeArg::Installer => Self::Installer,
+            ModeArg::Setup => Self::Setup,
             ModeArg::Ide => Self::Ide,
         }
     }
@@ -49,6 +51,7 @@ pub fn run(default_mode: GuiMode) -> eframe::Result<()> {
     match mode {
         GuiMode::Chooser => run_product(ChooserProduct, launch),
         GuiMode::Installer => run_product(InstallerProduct, launch),
+        GuiMode::Setup => run_product(SetupProduct, launch),
         GuiMode::Ide => run_product(IdeProduct, launch),
         GuiMode::Launcher | GuiMode::Play => run_product(LauncherProduct, launch),
         GuiMode::Studio => run_product(StudioProduct, launch),
@@ -96,6 +99,7 @@ impl GuiProduct for LauncherProduct {
 }
 
 struct InstallerProduct;
+struct SetupProduct;
 
 struct IdeProduct;
 
@@ -279,5 +283,27 @@ impl GuiProduct for InstallerProduct {
         launch: GuiLaunch,
     ) -> Box<dyn eframe::App> {
         Box::new(vapor_installer_ui::InstallerApp::new(launch.app_root))
+    }
+}
+
+impl GuiProduct for SetupProduct {
+    fn title(&self) -> &'static str {
+        "Vapor Setup"
+    }
+
+    fn window_size(&self) -> [f32; 2] {
+        [680.0, 500.0]
+    }
+
+    fn minimum_window_size(&self) -> [f32; 2] {
+        [560.0, 420.0]
+    }
+
+    fn create(
+        &self,
+        _context: &eframe::CreationContext<'_>,
+        _launch: GuiLaunch,
+    ) -> Box<dyn eframe::App> {
+        Box::new(vapor_installer_ui::InstallerApp::new_standalone_bootstrap())
     }
 }

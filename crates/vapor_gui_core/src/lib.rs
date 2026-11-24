@@ -23,6 +23,7 @@ pub enum GuiMode {
     Play,
     Chooser,
     Installer,
+    Setup,
     Ide,
 }
 
