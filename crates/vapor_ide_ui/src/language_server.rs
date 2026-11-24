@@ -10,6 +10,15 @@ pub(super) fn workspace_symbol_search_debounce_pending(
         .is_some_and(|changed_at| now.duration_since(changed_at) < WORKSPACE_SYMBOL_SEARCH_DEBOUNCE)
 }
 
+pub(super) fn workspace_symbol_request_is_needed(
+    query: &str,
+    requested_query: Option<&str>,
+    language_server_ready: bool,
+    debounce_pending: bool,
+) -> bool {
+    language_server_ready && !debounce_pending && requested_query != Some(query.trim())
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum LanguageServerRequest {
     Start,
@@ -417,24 +426,16 @@ impl IdeApp {
             self.language_server.workspace_symbol_error = None;
             self.language_server.workspace_symbols.clear();
             self.cancel_workspace_symbol_requests();
-            if query.is_empty() {
-                return;
-            }
         }
-        if query.is_empty() {
-            self.language_server.workspace_symbol_query = None;
-            self.language_server.workspace_symbol_error = None;
-            self.language_server.workspace_symbols.clear();
-            return;
-        }
-        if !self.language_server.ready
-            || self.language_server.workspace_symbol_query.as_deref() == Some(query)
-        {
-            return;
-        }
-        if workspace_symbol_search_debounce_pending(
-            self.language_server.workspace_symbol_input_changed_at,
-            Instant::now(),
+        if !workspace_symbol_request_is_needed(
+            query,
+            self.language_server.workspace_symbol_query.as_deref(),
+            self.language_server.ready,
+            !query.is_empty()
+                && workspace_symbol_search_debounce_pending(
+                    self.language_server.workspace_symbol_input_changed_at,
+                    Instant::now(),
+                ),
         ) {
             return;
         }
@@ -473,7 +474,11 @@ impl IdeApp {
         );
         self.language_server.workspace_symbols.clear();
         self.language_server.workspace_symbol_query = Some(query.to_owned());
-        self.workspace.status = format!("Searching Rust Analyzer for `{query}`…");
+        self.workspace.status = if query.is_empty() {
+            "Loading Rust workspace structure…".to_owned()
+        } else {
+            format!("Searching Rust Analyzer for `{query}`…")
+        };
         self.send_language_server_notification(message);
     }
 
@@ -1393,7 +1398,7 @@ impl IdeApp {
                     self.request_document_symbols(&path);
                 }
                 if self.semantic.explorer_symbols {
-                    self.request_workspace_symbols(&self.workspace.file_query.clone());
+                    self.request_workspace_symbols(&self.semantic.structure_query.clone());
                 }
                 return;
             }
@@ -1411,7 +1416,7 @@ impl IdeApp {
                     if workspace_symbol_request_is_current(
                         &request,
                         self.workspace.root.as_deref(),
-                        &self.workspace.file_query,
+                        &self.semantic.structure_query,
                         &self.editor.documents,
                     ) {
                         self.language_server.workspace_symbols.clear();
@@ -1419,7 +1424,8 @@ impl IdeApp {
                         self.language_server.workspace_symbol_error = Some(error.clone());
                         self.workspace.status =
                             format!("Rust Analyzer workspace search failed: {error}");
-                    } else if request.query.as_deref() == Some(self.workspace.file_query.trim()) {
+                    } else if request.query.as_deref() == Some(self.semantic.structure_query.trim())
+                    {
                         self.language_server.workspace_symbols.clear();
                         self.language_server.workspace_symbol_query = None;
                         self.language_server.workspace_symbol_error = None;
@@ -1452,7 +1458,7 @@ impl IdeApp {
                 if workspace_symbol_request_is_current(
                     &request,
                     self.workspace.root.as_deref(),
-                    &self.workspace.file_query,
+                    &self.semantic.structure_query,
                     &self.editor.documents,
                 ) {
                     self.language_server.workspace_symbols =
@@ -1462,7 +1468,7 @@ impl IdeApp {
                         "Rust Analyzer found {} workspace symbols.",
                         self.language_server.workspace_symbols.len()
                     );
-                } else if request.query.as_deref() == Some(self.workspace.file_query.trim()) {
+                } else if request.query.as_deref() == Some(self.semantic.structure_query.trim()) {
                     self.language_server.workspace_symbols.clear();
                     self.language_server.workspace_symbol_query = None;
                     self.workspace.status = "Open files changed during symbol search; search again for current results.".to_owned();

@@ -33,6 +33,7 @@ mod rust_semantics;
 mod semantic_view;
 mod service_session;
 mod toml_semantics;
+mod workbench;
 mod workspace_navigation;
 mod workspace_view;
 mod xml_semantics;
@@ -59,15 +60,15 @@ use lsp_text::{
     rust_analyzer_initialization_options, semantic_object_byte_range,
 };
 use toml_semantics::toml_parse_diagnostic;
+use workbench::{CompactView, LayoutMode, ToolWindow, WorkbenchState, layout_mode};
 use workspace_navigation::{
     FileTreeView, canonical_rust_item_kind, canonical_rust_module_parent, document_tab_label,
-    draw_file_tree, reference_range, rust_crate_roots, same_existing_workspace_path,
-    workspace_content_is_within, workspace_source_manifest,
+    draw_file_tree, file_display_label, reference_range, rust_crate_roots,
+    same_existing_workspace_path, semantic_document_default_open, workspace_content_is_within,
+    workspace_source_manifest,
 };
 #[cfg(test)]
-use workspace_navigation::{
-    file_display_label, rust_label_parts, shortest_rust_label, workspace_tree_ordering,
-};
+use workspace_navigation::{rust_label_parts, shortest_rust_label, workspace_tree_ordering};
 use xml_semantics::xml_parse_diagnostic;
 
 #[derive(Clone)]
@@ -285,34 +286,20 @@ struct SemanticWorkbenchState {
     selected: Option<SemanticObjectRef>,
     pending_workspace_symbol: Option<SemanticObject>,
     explorer_symbols: bool,
+    structure_query: String,
     edit_preview: Option<VersionedEditPreview>,
     workspace_edit_preview: Option<Vec<VersionedEditPreview>>,
     rename_target: Option<SemanticObjectRef>,
     rename_input: String,
 }
 
+#[derive(Default)]
 struct InterfaceState {
     console: vapor_gui_core::console::ConsolePanelState,
     console_requests: HashSet<String>,
-    bottom_open: bool,
-    bottom_console_active: bool,
-    inspector_open: bool,
+    workbench: WorkbenchState,
     about_open: bool,
     authoring: WorkspaceAuthoring,
-}
-
-impl Default for InterfaceState {
-    fn default() -> Self {
-        Self {
-            console: vapor_gui_core::console::ConsolePanelState::default(),
-            console_requests: HashSet::new(),
-            bottom_open: true,
-            bottom_console_active: false,
-            inspector_open: true,
-            about_open: false,
-            authoring: WorkspaceAuthoring::default(),
-        }
-    }
 }
 
 fn publish_local_semantic_results(
@@ -355,7 +342,8 @@ pub struct IdeApp {
 }
 
 impl IdeApp {
-    pub fn new(_creation: &eframe::CreationContext<'_>, launch: vapor_gui_core::GuiLaunch) -> Self {
+    pub fn new(creation: &eframe::CreationContext<'_>, launch: vapor_gui_core::GuiLaunch) -> Self {
+        vapor_gui_core::theme::apply_ide_theme(&creation.egui_ctx);
         let workspace_input = launch
             .workspace
             .as_ref()
@@ -380,10 +368,7 @@ impl eframe::App for IdeApp {
         self.poll_connection();
         self.poll_service();
         if ui.input(|input| input.key_pressed(egui::Key::F2)) {
-            if !self.interface.bottom_open {
-                self.interface.bottom_console_active = true;
-            }
-            self.interface.bottom_open = !self.interface.bottom_open;
+            self.interface.workbench.toggle_bottom_from_shortcut();
         }
         if ui.input(|input| input.modifiers.command && input.key_pressed(egui::Key::S)) {
             if ui.input(|input| input.modifiers.shift) {
@@ -461,26 +446,67 @@ impl eframe::App for IdeApp {
             ui.ctx().request_repaint_after(Duration::from_millis(80));
             return;
         }
-        if self.interface.bottom_open {
+        if self.interface.workbench.bottom_visible {
             egui::Panel::bottom("ide-build")
                 .resizable(true)
-                .default_size(190.0)
-                .size_range(140.0..=520.0)
+                .default_size(workbench::DEFAULT_TOOL_WINDOW_HEIGHT)
+                .size_range(workbench::TOOL_WINDOW_HEIGHT_RANGE)
                 .show(ui, |ui| self.draw_bottom(ui));
         }
-        if self.interface.inspector_open {
-            egui::Panel::right("ide-inspector")
-                .default_size(240.0)
-                .size_range(180.0..=380.0)
-                .resizable(true)
-                .show(ui, |ui| self.draw_inspector(ui));
+        let layout = layout_mode(ui.available_width());
+        match layout {
+            LayoutMode::Compact => {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        for (view, label) in [
+                            (CompactView::Explorer, "Explorer"),
+                            (CompactView::Editor, "Editor"),
+                            (CompactView::Inspector, "Inspector"),
+                        ] {
+                            ui.selectable_value(
+                                &mut self.interface.workbench.compact_view,
+                                view,
+                                label,
+                            );
+                        }
+                    });
+                    ui.separator();
+                    match self.interface.workbench.compact_view {
+                        CompactView::Explorer => self.draw_files(ui),
+                        CompactView::Editor => self.draw_editor(ui),
+                        CompactView::Inspector => self.draw_inspector(ui),
+                    }
+                });
+            }
+            LayoutMode::Standard | LayoutMode::Wide => {
+                if layout == LayoutMode::Wide && self.interface.workbench.inspector_visible {
+                    egui::Panel::right("ide-inspector")
+                        .default_size(280.0)
+                        .size_range(220.0..=400.0)
+                        .resizable(true)
+                        .show(ui, |ui| self.draw_inspector(ui));
+                }
+                if self.interface.workbench.explorer_visible {
+                    let (default_width, min_width, max_width) =
+                        workbench::explorer_panel_metrics(layout);
+                    egui::Panel::left("ide-project")
+                        .default_size(default_width)
+                        .size_range(min_width..=max_width)
+                        .resizable(true)
+                        .show(ui, |ui| self.draw_files(ui));
+                }
+                egui::CentralPanel::default().show(ui, |ui| self.draw_editor(ui));
+                if layout == LayoutMode::Standard && self.interface.workbench.inspector_visible {
+                    let mut inspector_visible = self.interface.workbench.inspector_visible;
+                    egui::Window::new("Inspector")
+                        .id(egui::Id::new("ide-inspector-floating"))
+                        .default_size([300.0, 520.0])
+                        .open(&mut inspector_visible)
+                        .show(ui.ctx(), |ui| self.draw_inspector(ui));
+                    self.interface.workbench.inspector_visible = inspector_visible;
+                }
+            }
         }
-        egui::Panel::left("ide-project")
-            .default_size(260.0)
-            .size_range(190.0..=520.0)
-            .resizable(true)
-            .show(ui, |ui| self.draw_files(ui));
-        egui::CentralPanel::default().show(ui, |ui| self.draw_editor(ui));
         self.draw_project_switcher(ui.ctx());
         self.draw_authoring_dialogs(ui.ctx());
         self.draw_code_actions(ui.ctx());

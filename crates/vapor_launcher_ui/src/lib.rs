@@ -1545,7 +1545,9 @@ fn connect_service() -> Result<Client, vapor_client::ClientError> {
         legacy_storage: Default::default(),
         state_directory: None,
     };
-    Client::connect_or_start(&service_sibling_path(&executable), config)
+    let mut client = Client::connect_or_start(&service_sibling_path(&executable), config)?;
+    client.set_origin(vapor_client_protocol::ClientOrigin::Launcher);
+    Ok(client)
 }
 
 fn intent_label(intent: CompositionIntent) -> &'static str {

@@ -2,8 +2,7 @@ use super::*;
 
 impl IdeApp {
     pub(super) fn draw_inspector(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Inspector");
-        ui.separator();
+        vapor_gui_core::theme::tool_window_header(ui, "Inspector", Some("Selection details"));
         if let Some(reference) = self.semantic.selected.clone()
             && let Some(object) = self.semantic.index.resolve(&reference).cloned()
         {
@@ -63,129 +62,142 @@ impl IdeApp {
                     .for_semantic_range(&relative_path, object.range);
                 if !diagnostics.is_empty() {
                     ui.add_space(8.0);
-                    ui.strong(format!("Problems · {}", diagnostics.len()));
-                    for problem in diagnostics {
-                        let diagnostic = problem.diagnostic;
-                        let severity = match diagnostic.severity {
-                            vapor_gui_core::DiagnosticSeverity::Error => {
-                                ("Error", egui::Color32::LIGHT_RED)
-                            }
-                            vapor_gui_core::DiagnosticSeverity::Warning => {
-                                ("Warning", egui::Color32::YELLOW)
-                            }
-                            vapor_gui_core::DiagnosticSeverity::Information => {
-                                ("Info", egui::Color32::LIGHT_BLUE)
-                            }
-                            vapor_gui_core::DiagnosticSeverity::Hint => {
-                                ("Hint", egui::Color32::GRAY)
-                            }
-                        };
-                        ui.horizontal_wrapped(|ui| {
-                            ui.colored_label(severity.1, severity.0);
-                            let mut origins =
-                                Vec::with_capacity(problem.linked_diagnostics.len() + 1);
-                            for origin in std::iter::once(diagnostic.origin).chain(
-                                problem
-                                    .linked_diagnostics
-                                    .iter()
-                                    .map(|diagnostic| diagnostic.origin),
-                            ) {
-                                let label = diagnostic_origin_label(origin);
-                                if !origins.contains(&label) {
-                                    origins.push(label);
-                                }
-                            }
-                            ui.weak(origins.join(" + "));
-                            if let Some(code) = &diagnostic.code {
-                                ui.monospace(code);
-                            }
-                            if let Some(span) = &diagnostic.primary
-                                && ui.small_button("Open").clicked()
-                            {
-                                diagnostic_navigation = Some((
-                                    object.id.document.clone(),
-                                    span.start_line.saturating_sub(1) as usize,
-                                    span.start_column.saturating_sub(1) as usize,
-                                ));
-                            }
-                            if self.language_server.ready
-                                && diagnostic.origin
-                                    == vapor_gui_core::DiagnosticOrigin::RustAnalyzer
-                                && object
-                                    .id
-                                    .document
-                                    .extension()
-                                    .is_some_and(|extension| extension == "rs")
-                                && self.editor.documents.contains_key(&object.id.document)
-                                && ui.small_button("Quick fix").clicked()
-                            {
-                                quick_fix_request = Some(diagnostic.clone());
-                            }
-                            if !diagnostic.related.is_empty() {
-                                let root = self.workspace.root.as_deref();
-                                ui.menu_button(
-                                    format!("Related ({})", diagnostic.related.len()),
-                                    |ui| {
-                                        for related in &diagnostic.related {
-                                            let label = format!(
-                                                "{}:{}:{} · {}",
-                                                related.file,
-                                                related.start_line,
-                                                related.start_column,
-                                                related
-                                                    .label
-                                                    .as_deref()
-                                                    .unwrap_or("related location")
-                                            );
-                                            if ui.button(label).clicked()
-                                                && let Some(path) = root.and_then(|root| {
-                                                    workspace_diagnostic_path(
-                                                        root,
-                                                        &related.file,
-                                                        &self.workspace.files,
-                                                    )
-                                                })
-                                            {
-                                                related_navigation = Some((
-                                                    path,
-                                                    related.start_line.saturating_sub(1) as usize,
-                                                    related.start_column.saturating_sub(1) as usize,
-                                                ));
-                                            }
+                    egui::CollapsingHeader::new(format!("Problems ({})", diagnostics.len()))
+                        .id_salt(("semantic-object-problems", object.id.qualified_name()))
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            for problem in diagnostics {
+                                let diagnostic = problem.diagnostic;
+                                let severity = match diagnostic.severity {
+                                    vapor_gui_core::DiagnosticSeverity::Error => {
+                                        ("Error", egui::Color32::LIGHT_RED)
+                                    }
+                                    vapor_gui_core::DiagnosticSeverity::Warning => {
+                                        ("Warning", egui::Color32::YELLOW)
+                                    }
+                                    vapor_gui_core::DiagnosticSeverity::Information => {
+                                        ("Info", egui::Color32::LIGHT_BLUE)
+                                    }
+                                    vapor_gui_core::DiagnosticSeverity::Hint => {
+                                        ("Hint", egui::Color32::GRAY)
+                                    }
+                                };
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.colored_label(severity.1, severity.0);
+                                    let mut origins =
+                                        Vec::with_capacity(problem.linked_diagnostics.len() + 1);
+                                    for origin in std::iter::once(diagnostic.origin).chain(
+                                        problem
+                                            .linked_diagnostics
+                                            .iter()
+                                            .map(|diagnostic| diagnostic.origin),
+                                    ) {
+                                        let label = diagnostic_origin_label(origin);
+                                        if !origins.contains(&label) {
+                                            origins.push(label);
                                         }
-                                    },
-                                );
+                                    }
+                                    ui.weak(origins.join(" + "));
+                                    if let Some(code) = &diagnostic.code {
+                                        ui.monospace(code);
+                                    }
+                                    if let Some(span) = &diagnostic.primary
+                                        && ui.small_button("Open").clicked()
+                                    {
+                                        diagnostic_navigation = Some((
+                                            object.id.document.clone(),
+                                            span.start_line.saturating_sub(1) as usize,
+                                            span.start_column.saturating_sub(1) as usize,
+                                        ));
+                                    }
+                                    if self.language_server.ready
+                                        && diagnostic.origin
+                                            == vapor_gui_core::DiagnosticOrigin::RustAnalyzer
+                                        && object
+                                            .id
+                                            .document
+                                            .extension()
+                                            .is_some_and(|extension| extension == "rs")
+                                        && self.editor.documents.contains_key(&object.id.document)
+                                        && ui.small_button("Quick fix").clicked()
+                                    {
+                                        quick_fix_request = Some(diagnostic.clone());
+                                    }
+                                    if !diagnostic.related.is_empty() {
+                                        let root = self.workspace.root.as_deref();
+                                        ui.menu_button(
+                                            format!("Related ({})", diagnostic.related.len()),
+                                            |ui| {
+                                                for related in &diagnostic.related {
+                                                    let label = format!(
+                                                        "{}:{}:{} · {}",
+                                                        related.file,
+                                                        related.start_line,
+                                                        related.start_column,
+                                                        related
+                                                            .label
+                                                            .as_deref()
+                                                            .unwrap_or("related location")
+                                                    );
+                                                    if ui.button(label).clicked()
+                                                        && let Some(path) = root.and_then(|root| {
+                                                            workspace_diagnostic_path(
+                                                                root,
+                                                                &related.file,
+                                                                &self.workspace.files,
+                                                            )
+                                                        })
+                                                    {
+                                                        related_navigation = Some((
+                                                            path,
+                                                            related.start_line.saturating_sub(1)
+                                                                as usize,
+                                                            related.start_column.saturating_sub(1)
+                                                                as usize,
+                                                        ));
+                                                    }
+                                                }
+                                            },
+                                        );
+                                    }
+                                });
+                                ui.label(&diagnostic.message).on_hover_ui(|ui| {
+                                    ui.label(diagnostics::diagnostic_details(diagnostic));
+                                    for linked in problem.linked_diagnostics {
+                                        ui.separator();
+                                        ui.strong(diagnostic_origin_label(linked.origin));
+                                        ui.label(diagnostics::diagnostic_details(linked));
+                                    }
+                                });
                             }
                         });
-                        ui.label(&diagnostic.message).on_hover_ui(|ui| {
-                            ui.label(diagnostics::diagnostic_details(diagnostic));
-                            for linked in problem.linked_diagnostics {
-                                ui.separator();
-                                ui.strong(diagnostic_origin_label(linked.origin));
-                                ui.label(diagnostics::diagnostic_details(linked));
-                            }
-                        });
-                    }
                 }
             }
             if !object.attributes.is_empty() {
                 ui.add_space(10.0);
-                ui.strong("Attributes");
-                for attribute in &object.attributes {
-                    ui.monospace(attribute);
-                }
+                egui::CollapsingHeader::new(format!("Attributes ({})", object.attributes.len()))
+                    .id_salt(("semantic-object-attributes", object.id.qualified_name()))
+                    .show(ui, |ui| {
+                        for attribute in &object.attributes {
+                            ui.monospace(attribute);
+                        }
+                    });
             }
             let mut selected_member = None;
             if !object.children.is_empty() {
                 ui.add_space(10.0);
-                ui.strong("Members");
-                semantic_view::draw_semantic_members(
-                    ui,
-                    &object.children,
-                    reference.document_version,
-                    self.semantic.selected.as_ref(),
-                    &mut selected_member,
-                );
+                egui::CollapsingHeader::new(format!("Members ({})", object.children.len()))
+                    .id_salt(("semantic-object-members", object.id.qualified_name()))
+                    .default_open(object.children.len() <= 6)
+                    .show(ui, |ui| {
+                        semantic_view::draw_semantic_members(
+                            ui,
+                            &object.children,
+                            reference.document_version,
+                            self.semantic.selected.as_ref(),
+                            &mut selected_member,
+                        );
+                    });
             }
             ui.add_space(8.0);
             ui.horizontal(|ui| {

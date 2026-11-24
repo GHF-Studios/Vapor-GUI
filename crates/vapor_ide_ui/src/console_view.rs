@@ -17,10 +17,26 @@ impl IdeApp {
             .problems
             .count_filtered(&self.semantic.problem_filter);
         let total_diagnostic_count = self.semantic.problems.count();
+        let operation_rows = self
+            .service
+            .client
+            .as_ref()
+            .map_or_else(Vec::new, |client| {
+                let snapshot = client.latest_snapshot();
+                crate::workbench::visible_operation_rows(
+                    &snapshot.active_operations,
+                    &snapshot.operation_history,
+                )
+            });
+        vapor_gui_core::theme::tool_window_header(
+            ui,
+            "Workspace tools",
+            Some("Problems · Console · Tasks"),
+        );
         ui.horizontal(|ui| {
             if ui
                 .selectable_label(
-                    !self.interface.bottom_console_active,
+                    self.interface.workbench.active_tool_window == ToolWindow::Problems,
                     if diagnostic_count == total_diagnostic_count {
                         format!("Problems ({diagnostic_count})")
                     } else {
@@ -29,19 +45,35 @@ impl IdeApp {
                 )
                 .clicked()
             {
-                self.interface.bottom_console_active = false;
+                self.interface
+                    .workbench
+                    .open_tool_window(ToolWindow::Problems);
             }
             if ui
-                .selectable_label(self.interface.bottom_console_active, "Console")
+                .selectable_label(
+                    self.interface.workbench.active_tool_window == ToolWindow::Console,
+                    "Console",
+                )
                 .clicked()
             {
-                self.interface.bottom_console_active = true;
+                self.interface
+                    .workbench
+                    .open_tool_window(ToolWindow::Console);
+            }
+            if ui
+                .selectable_label(
+                    self.interface.workbench.active_tool_window == ToolWindow::Tasks,
+                    format!("Tasks ({})", operation_rows.len()),
+                )
+                .clicked()
+            {
+                self.interface.workbench.open_tool_window(ToolWindow::Tasks);
             }
             ui.separator();
             ui.weak(&self.language_server.status);
         });
         ui.separator();
-        if self.interface.bottom_console_active {
+        if self.interface.workbench.active_tool_window == ToolWindow::Console {
             if self.interface.console.history.is_empty() {
                 ui.weak("Managed commands and toolchain output appear here.");
             }
@@ -64,120 +96,165 @@ impl IdeApp {
             if let Some(command) = console_result.command {
                 self.submit_console_command(&command);
             }
+        } else if self.interface.workbench.active_tool_window == ToolWindow::Tasks {
+            if operation_rows.is_empty() {
+                ui.weak("Managed IDE operations will appear here when you run them.");
+            } else {
+                let row_height = ui
+                    .text_style_height(&egui::TextStyle::Body)
+                    .max(ui.spacing().interact_size.y);
+                egui::ScrollArea::vertical()
+                    .id_salt("ide-operation-history")
+                    .auto_shrink([false, false])
+                    .show_rows(ui, row_height, operation_rows.len(), |ui, visible_rows| {
+                        for operation in &operation_rows[visible_rows] {
+                            egui::Frame::new()
+                                .fill(ui.visuals().faint_bg_color)
+                                .inner_margin(egui::Margin::symmetric(8, 5))
+                                .show(ui, |ui| {
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.strong(crate::workbench::operation_title(
+                                            &operation.action,
+                                        ));
+                                        ui.weak(crate::workbench::operation_status_label(
+                                            &operation.status,
+                                        ));
+                                        ui.weak(crate::workbench::operation_phase_label(
+                                            operation.phase,
+                                        ));
+                                        if let Some(progress) = operation.progress {
+                                            ui.add(
+                                                egui::ProgressBar::new(progress.clamp(0.0, 1.0))
+                                                    .desired_width(120.0),
+                                            );
+                                        }
+                                    });
+                                    if let OperationStatus::Failed { message } = &operation.status {
+                                        ui.colored_label(egui::Color32::LIGHT_RED, message);
+                                    }
+                                });
+                        }
+                    });
+            }
         } else {
             let domains = self.semantic.problems.filter_domains();
-            ui.horizontal_wrapped(|ui| {
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.semantic.problem_filter.query)
-                        .hint_text("Filter problems")
-                        .desired_width(180.0),
-                );
-                egui::ComboBox::from_id_salt(ui.id().with("problem-severity"))
-                    .selected_text(
-                        self.semantic
-                            .problem_filter
-                            .severity
-                            .map_or("All severities", diagnostic_severity_label),
-                    )
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut self.semantic.problem_filter.severity,
-                            None,
-                            "All severities",
+            egui::ScrollArea::horizontal()
+                .id_salt("ide-problem-filters")
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.semantic.problem_filter.query)
+                                .hint_text("Filter problems")
+                                .desired_width(180.0),
                         );
-                        for severity in [
-                            vapor_gui_core::DiagnosticSeverity::Error,
-                            vapor_gui_core::DiagnosticSeverity::Warning,
-                            vapor_gui_core::DiagnosticSeverity::Information,
-                            vapor_gui_core::DiagnosticSeverity::Hint,
-                        ] {
-                            ui.selectable_value(
-                                &mut self.semantic.problem_filter.severity,
-                                Some(severity),
-                                diagnostic_severity_label(severity),
-                            );
+                        egui::ComboBox::from_id_salt(ui.id().with("problem-severity"))
+                            .selected_text(
+                                self.semantic
+                                    .problem_filter
+                                    .severity
+                                    .map_or("All severities", diagnostic_severity_label),
+                            )
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut self.semantic.problem_filter.severity,
+                                    None,
+                                    "All severities",
+                                );
+                                for severity in [
+                                    vapor_gui_core::DiagnosticSeverity::Error,
+                                    vapor_gui_core::DiagnosticSeverity::Warning,
+                                    vapor_gui_core::DiagnosticSeverity::Information,
+                                    vapor_gui_core::DiagnosticSeverity::Hint,
+                                ] {
+                                    ui.selectable_value(
+                                        &mut self.semantic.problem_filter.severity,
+                                        Some(severity),
+                                        diagnostic_severity_label(severity),
+                                    );
+                                }
+                            });
+                        egui::ComboBox::from_id_salt(ui.id().with("problem-origin"))
+                            .selected_text(
+                                self.semantic
+                                    .problem_filter
+                                    .origin
+                                    .map_or("All producers", diagnostic_origin_label),
+                            )
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut self.semantic.problem_filter.origin,
+                                    None,
+                                    "All producers",
+                                );
+                                for origin in [
+                                    vapor_gui_core::DiagnosticOrigin::RustAnalyzer,
+                                    vapor_gui_core::DiagnosticOrigin::Cargo,
+                                    vapor_gui_core::DiagnosticOrigin::Rustc,
+                                    vapor_gui_core::DiagnosticOrigin::Rustdoc,
+                                    vapor_gui_core::DiagnosticOrigin::Vapor,
+                                ] {
+                                    ui.selectable_value(
+                                        &mut self.semantic.problem_filter.origin,
+                                        Some(origin),
+                                        diagnostic_origin_label(origin),
+                                    );
+                                }
+                            });
+                        egui::ComboBox::from_id_salt(ui.id().with("problem-domain"))
+                            .selected_text(
+                                self.semantic
+                                    .problem_filter
+                                    .domain
+                                    .as_deref()
+                                    .unwrap_or("All domains"),
+                            )
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut self.semantic.problem_filter.domain,
+                                    None,
+                                    "All domains",
+                                );
+                                for domain in &domains {
+                                    ui.selectable_value(
+                                        &mut self.semantic.problem_filter.domain,
+                                        Some(domain.clone()),
+                                        domain,
+                                    );
+                                }
+                            });
+                        egui::ComboBox::from_id_salt(ui.id().with("problem-scope"))
+                            .selected_text(
+                                self.semantic
+                                    .problem_filter
+                                    .scope
+                                    .map_or("All scopes", |scope| scope.label()),
+                            )
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut self.semantic.problem_filter.scope,
+                                    None,
+                                    "All scopes",
+                                );
+                                for scope in [
+                                    vapor_gui_core::DiagnosticScope::Unspecified,
+                                    vapor_gui_core::DiagnosticScope::Workspace,
+                                    vapor_gui_core::DiagnosticScope::Document,
+                                    vapor_gui_core::DiagnosticScope::SemanticObject,
+                                    vapor_gui_core::DiagnosticScope::Operation,
+                                ] {
+                                    ui.selectable_value(
+                                        &mut self.semantic.problem_filter.scope,
+                                        Some(scope),
+                                        scope.label(),
+                                    );
+                                }
+                            });
+                        if ui.small_button("Clear filters").clicked() {
+                            self.semantic.problem_filter = Default::default();
                         }
                     });
-                egui::ComboBox::from_id_salt(ui.id().with("problem-origin"))
-                    .selected_text(
-                        self.semantic
-                            .problem_filter
-                            .origin
-                            .map_or("All producers", diagnostic_origin_label),
-                    )
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut self.semantic.problem_filter.origin,
-                            None,
-                            "All producers",
-                        );
-                        for origin in [
-                            vapor_gui_core::DiagnosticOrigin::RustAnalyzer,
-                            vapor_gui_core::DiagnosticOrigin::Cargo,
-                            vapor_gui_core::DiagnosticOrigin::Rustc,
-                            vapor_gui_core::DiagnosticOrigin::Rustdoc,
-                            vapor_gui_core::DiagnosticOrigin::Vapor,
-                        ] {
-                            ui.selectable_value(
-                                &mut self.semantic.problem_filter.origin,
-                                Some(origin),
-                                diagnostic_origin_label(origin),
-                            );
-                        }
-                    });
-                egui::ComboBox::from_id_salt(ui.id().with("problem-domain"))
-                    .selected_text(
-                        self.semantic
-                            .problem_filter
-                            .domain
-                            .as_deref()
-                            .unwrap_or("All domains"),
-                    )
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut self.semantic.problem_filter.domain,
-                            None,
-                            "All domains",
-                        );
-                        for domain in &domains {
-                            ui.selectable_value(
-                                &mut self.semantic.problem_filter.domain,
-                                Some(domain.clone()),
-                                domain,
-                            );
-                        }
-                    });
-                egui::ComboBox::from_id_salt(ui.id().with("problem-scope"))
-                    .selected_text(
-                        self.semantic
-                            .problem_filter
-                            .scope
-                            .map_or("All scopes", |scope| scope.label()),
-                    )
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut self.semantic.problem_filter.scope,
-                            None,
-                            "All scopes",
-                        );
-                        for scope in [
-                            vapor_gui_core::DiagnosticScope::Unspecified,
-                            vapor_gui_core::DiagnosticScope::Workspace,
-                            vapor_gui_core::DiagnosticScope::Document,
-                            vapor_gui_core::DiagnosticScope::SemanticObject,
-                            vapor_gui_core::DiagnosticScope::Operation,
-                        ] {
-                            ui.selectable_value(
-                                &mut self.semantic.problem_filter.scope,
-                                Some(scope),
-                                scope.label(),
-                            );
-                        }
-                    });
-                if ui.small_button("Clear filters").clicked() {
-                    self.semantic.problem_filter = Default::default();
-                }
-            });
+                });
             let mut selected_diagnostic = None;
             let mut quick_fix_request = None;
             let row_height = ui

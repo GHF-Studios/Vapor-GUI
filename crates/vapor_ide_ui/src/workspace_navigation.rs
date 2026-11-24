@@ -9,11 +9,22 @@ pub(super) struct FileTreeView<'a> {
     pub(super) rust_crate_roots: &'a BTreeSet<PathBuf>,
 }
 
+pub(super) fn semantic_document_default_open(path: &Path, selected: Option<&Path>) -> bool {
+    selected == Some(path)
+}
+
+pub(super) fn workspace_directory_default_open(
+    directory: &Path,
+    selected: Option<&Path>,
+    filter: &str,
+) -> bool {
+    !filter.is_empty() || selected.is_some_and(|selected| selected.starts_with(directory))
+}
+
 pub(super) fn draw_file_tree(
     ui: &mut egui::Ui,
     tree: &WorkspaceFileTree,
     parent: &Path,
-    depth: usize,
     view: &FileTreeView<'_>,
     requested: &mut Option<PathBuf>,
 ) {
@@ -27,9 +38,13 @@ pub(super) fn draw_file_tree(
                 let path = parent.join(name);
                 egui::CollapsingHeader::new(name)
                     .id_salt(("ide-tree-folder", &path, !view.filter.is_empty()))
-                    .default_open(depth == 0 || !view.filter.is_empty())
+                    .default_open(workspace_directory_default_open(
+                        &path,
+                        view.selected.map(PathBuf::as_path),
+                        view.filter,
+                    ))
                     .show(ui, |ui| {
-                        draw_file_tree(ui, directory, &path, depth + 1, view, requested);
+                        draw_file_tree(ui, directory, &path, view, requested);
                     });
             }
             WorkspaceTreeEntry::File { index, .. } => {
@@ -326,10 +341,47 @@ pub(super) fn document_tab_label(
 #[cfg(test)]
 mod tests {
     use super::{
-        same_existing_workspace_path, workspace_content_is_within, workspace_source_manifest,
+        same_existing_workspace_path, semantic_document_default_open, workspace_content_is_within,
+        workspace_directory_default_open, workspace_source_manifest,
     };
     use std::path::Path;
     use vapor_client_protocol::{WorkspaceContentSnapshot, WorkspaceSourceProject};
+
+    #[test]
+    fn semantic_structure_expands_only_the_selected_document_by_default() {
+        let selected = Path::new("src/components.rs");
+        assert!(semantic_document_default_open(selected, Some(selected)));
+        assert!(!semantic_document_default_open(
+            Path::new("src/resources.rs"),
+            Some(selected)
+        ));
+        assert!(!semantic_document_default_open(selected, None));
+    }
+
+    #[test]
+    fn project_tree_opens_selected_path_and_search_matches_only() {
+        let selected = Path::new("crates/game/src/lib.rs");
+        assert!(workspace_directory_default_open(
+            Path::new("crates/game"),
+            Some(selected),
+            ""
+        ));
+        assert!(!workspace_directory_default_open(
+            Path::new("crates/engine"),
+            Some(selected),
+            ""
+        ));
+        assert!(!workspace_directory_default_open(
+            Path::new("crates"),
+            None,
+            ""
+        ));
+        assert!(workspace_directory_default_open(
+            Path::new("crates"),
+            None,
+            "world"
+        ));
+    }
 
     #[test]
     fn workspace_identity_requires_both_paths_to_exist() {

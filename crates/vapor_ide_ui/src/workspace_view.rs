@@ -1,5 +1,108 @@
 use super::*;
 
+#[derive(Default)]
+pub(super) struct WorkspaceSymbolNode<'a> {
+    pub(super) declarations: Vec<&'a SemanticObject>,
+    pub(super) children: BTreeMap<String, WorkspaceSymbolNode<'a>>,
+}
+
+type WorkspaceSymbolFiles<'a> = BTreeMap<PathBuf, Vec<&'a SemanticObject>>;
+
+pub(super) fn workspace_symbol_files_by_crate<'a>(
+    symbols: &'a [SemanticObject],
+    crate_roots: &BTreeSet<PathBuf>,
+) -> BTreeMap<PathBuf, WorkspaceSymbolFiles<'a>> {
+    let mut crates = BTreeMap::new();
+    for symbol in symbols {
+        let file = &symbol.id.document;
+        let crate_root = crate_roots
+            .iter()
+            .filter(|root| file.starts_with(root))
+            .max_by_key(|root| root.components().count())
+            .cloned()
+            .unwrap_or_else(|| PathBuf::from("Other Rust files"));
+        crates
+            .entry(crate_root)
+            .or_insert_with(BTreeMap::new)
+            .entry(file.clone())
+            .or_insert_with(Vec::new)
+            .push(symbol);
+    }
+    crates
+}
+
+pub(super) fn workspace_symbol_tree<'a>(
+    symbols: impl IntoIterator<Item = &'a SemanticObject>,
+) -> WorkspaceSymbolNode<'a> {
+    let mut root = WorkspaceSymbolNode::default();
+    for symbol in symbols {
+        let mut node = &mut root;
+        for segment in &symbol.id.path {
+            node = node.children.entry(segment.clone()).or_default();
+        }
+        node.declarations.push(symbol);
+    }
+    root
+}
+
+fn draw_workspace_symbol_tree(
+    ui: &mut egui::Ui,
+    node: &WorkspaceSymbolNode<'_>,
+    selected: Option<&vapor_gui_core::semantic::SemanticObjectId>,
+    requested: &mut Option<SemanticObject>,
+) {
+    for (name, child) in &node.children {
+        if child.children.is_empty() {
+            for declaration in &child.declarations {
+                let label = format!("{}  {}", declaration.kind.label(), declaration.name);
+                let response = ui.selectable_label(
+                    selected.is_some_and(|selected| selected == &declaration.id),
+                    label,
+                );
+                response.clone().on_hover_text(format!(
+                    "{}:{} · {}",
+                    declaration.id.document.display(),
+                    declaration.range.start.line.saturating_add(1),
+                    declaration.id.qualified_name(),
+                ));
+                if response.clicked() {
+                    *requested = Some((*declaration).clone());
+                }
+            }
+            continue;
+        }
+
+        let suffix = child
+            .declarations
+            .first()
+            .map_or_else(String::new, |declaration| {
+                format!("  ·  {}", declaration.kind.label())
+            });
+        egui::CollapsingHeader::new(format!("{name}{suffix}"))
+            .id_salt(("ide-workspace-symbol-node", name))
+            .default_open(false)
+            .show(ui, |ui| {
+                for declaration in &child.declarations {
+                    let label = format!("{}  {}", declaration.kind.label(), declaration.name);
+                    let response = ui.selectable_label(
+                        selected.is_some_and(|selected| selected == &declaration.id),
+                        label,
+                    );
+                    response.clone().on_hover_text(format!(
+                        "{}:{} · {}",
+                        declaration.id.document.display(),
+                        declaration.range.start.line.saturating_add(1),
+                        declaration.id.qualified_name(),
+                    ));
+                    if response.clicked() {
+                        *requested = Some((*declaration).clone());
+                    }
+                }
+                draw_workspace_symbol_tree(ui, child, selected, requested);
+            });
+    }
+}
+
 impl IdeApp {
     pub(super) fn header(&mut self, ui: &mut egui::Ui) {
         let mut run_action = None;
@@ -26,7 +129,8 @@ impl IdeApp {
         } else {
             "Open project"
         };
-        ui.horizontal(|ui| {
+        let layout = layout_mode(ui.available_width());
+        ui.horizontal_wrapped(|ui| {
             ui.menu_button("File", |ui| {
                 if ui.button("Open project…").clicked() {
                     open_project = true;
@@ -151,8 +255,25 @@ impl IdeApp {
                 }
             });
             ui.menu_button("View", |ui| {
-                ui.checkbox(&mut self.interface.inspector_open, "Inspector");
-                ui.checkbox(&mut self.interface.bottom_open, "Bottom panel");
+                if layout == LayoutMode::Compact {
+                    ui.weak("Compact view");
+                    for (view, label) in [
+                        (CompactView::Explorer, "Explorer"),
+                        (CompactView::Editor, "Editor"),
+                        (CompactView::Inspector, "Inspector"),
+                    ] {
+                        ui.selectable_value(
+                            &mut self.interface.workbench.compact_view,
+                            view,
+                            label,
+                        );
+                    }
+                    ui.separator();
+                } else {
+                    ui.checkbox(&mut self.interface.workbench.explorer_visible, "Explorer");
+                }
+                ui.checkbox(&mut self.interface.workbench.inspector_visible, "Inspector");
+                ui.checkbox(&mut self.interface.workbench.bottom_visible, "Bottom panel");
             });
             ui.menu_button("Run", |ui| {
                 if ui
@@ -193,14 +314,20 @@ impl IdeApp {
                 }
                 ui.weak(&self.language_server.status);
             });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.strong("VAPOR IDE");
+            });
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.horizontal(|ui| {
+                if let Some(root) = &self.workspace.root {
+                    ui.strong(root.file_name().unwrap_or_default().to_string_lossy())
+                        .on_hover_text(root.display().to_string());
+                } else {
+                    ui.weak("No workspace open");
+                }
+            });
             ui.separator();
-            ui.strong("Vapor IDE");
-            ui.separator();
-            if let Some(root) = &self.workspace.root {
-                ui.strong(root.file_name().unwrap_or_default().to_string_lossy());
-            } else {
-                ui.weak("Open a project to start coding");
-            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .add_enabled(
@@ -478,19 +605,15 @@ impl IdeApp {
     }
 
     pub(super) fn draw_files(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.heading("Explorer");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if self.semantic.explorer_symbols {
-                    ui.weak(format!("{} open", self.semantic.index.documents().count()));
-                } else {
-                    ui.weak(format!(
-                        "{} files",
-                        self.workspace.file_tree.matching_file_count("")
-                    ));
-                }
-            });
-        });
+        vapor_gui_core::theme::tool_window_header(
+            ui,
+            "Explorer",
+            Some(if self.semantic.explorer_symbols {
+                "Structure"
+            } else {
+                "Files"
+            }),
+        );
         ui.horizontal(|ui| {
             if ui
                 .selectable_label(!self.semantic.explorer_symbols, "Files")
@@ -507,28 +630,59 @@ impl IdeApp {
                 self.semantic.explorer_symbols = true;
             }
         });
-        let search = ui.add(
-            egui::TextEdit::singleline(&mut self.workspace.file_query).hint_text(
-                if self.semantic.explorer_symbols {
-                    "Search Rust workspace + open-file structure"
+        let search = if self.semantic.explorer_symbols {
+            ui.horizontal(|ui| {
+                let clear_width = if self.semantic.structure_query.is_empty() {
+                    0.0
                 } else {
-                    "Filter files | Ctrl/Cmd+P"
-                },
-            ),
-        );
-        if self.workspace.focus_file_query {
+                    56.0
+                };
+                let width = (ui.available_width() - clear_width).max(80.0);
+                let response = ui.add_sized(
+                    [width, ui.spacing().interact_size.y],
+                    egui::TextEdit::singleline(&mut self.semantic.structure_query)
+                        .hint_text("Search declarations"),
+                );
+                if !self.semantic.structure_query.is_empty() && ui.small_button("Clear").clicked() {
+                    self.semantic.structure_query.clear();
+                }
+                response
+            })
+            .inner
+        } else {
+            ui.horizontal(|ui| {
+                let clear_width = if self.workspace.file_query.is_empty() {
+                    0.0
+                } else {
+                    56.0
+                };
+                let width = (ui.available_width() - clear_width).max(80.0);
+                let response = ui.add_sized(
+                    [width, ui.spacing().interact_size.y],
+                    egui::TextEdit::singleline(&mut self.workspace.file_query)
+                        .hint_text("Filter files · Ctrl/Cmd+P"),
+                );
+                if !self.workspace.file_query.is_empty() && ui.small_button("Clear").clicked() {
+                    self.workspace.file_query.clear();
+                }
+                response
+            })
+            .inner
+        };
+        if self.workspace.focus_file_query && !self.semantic.explorer_symbols {
             search.request_focus();
             self.workspace.focus_file_query = false;
         }
-        if !self.workspace.file_query.is_empty() && ui.small_button("Clear").clicked() {
-            self.workspace.file_query.clear();
-        }
-        let filter = self.workspace.file_query.trim().to_lowercase();
+        let filter = if self.semantic.explorer_symbols {
+            self.semantic.structure_query.trim().to_lowercase()
+        } else {
+            self.workspace.file_query.trim().to_lowercase()
+        };
         if self.semantic.explorer_symbols {
             self.semantic
                 .match_cache
                 .prepare(&self.semantic.index, &filter);
-            let symbol_query = self.workspace.file_query.trim().to_owned();
+            let symbol_query = self.semantic.structure_query.trim().to_owned();
             self.request_workspace_symbols(&symbol_query);
             let mut requested_symbol = None;
             let mut requested_workspace_symbol = None;
@@ -536,73 +690,136 @@ impl IdeApp {
             egui::ScrollArea::vertical()
                 .id_salt("ide-semantic-symbol-tree")
                 .show(ui, |ui| {
-                    if !filter.is_empty() {
-                        ui.strong("Workspace Rust declarations");
-                        if !self.language_server.ready {
-                            ui.weak("Rust Analyzer will search the project when it is ready.");
-                        } else if self.language_server.workspace_symbol_query.as_deref()
-                            != Some(self.workspace.file_query.trim())
-                        {
-                            ui.weak("Searching workspace symbols…");
-                        } else if let Some(error) = &self.language_server.workspace_symbol_error {
-                            ui.colored_label(
-                                egui::Color32::LIGHT_RED,
-                                format!("Workspace symbol search failed: {error}"),
+                    ui.horizontal(|ui| {
+                        ui.strong(if filter.is_empty() {
+                            "Workspace declarations"
+                        } else {
+                            "Matching declarations"
+                        });
+                        ui.weak(format!("{}", self.language_server.workspace_symbols.len()));
+                    });
+                    if !self.language_server.ready {
+                        ui.weak("Rust Analyzer is starting; workspace structure will appear when it is ready.");
+                    } else if let Some(error) = &self.language_server.workspace_symbol_error {
+                        ui.colored_label(
+                            egui::Color32::LIGHT_RED,
+                            format!("Rust Analyzer could not load workspace structure: {error}"),
+                        );
+                    } else if self.language_server.workspace_symbol_query.as_deref()
+                        != Some(self.semantic.structure_query.trim())
+                        || self.language_server.pending_requests.values().any(|request| {
+                            request.request == LspRequest::WorkspaceSymbols
+                                && request.query.as_deref()
+                                    == Some(self.semantic.structure_query.trim())
+                        })
+                    {
+                        ui.weak(if filter.is_empty() {
+                            "Loading declarations from the whole Rust workspace…"
+                        } else {
+                            "Searching workspace declarations…"
+                        });
+                    } else if self.language_server.workspace_symbols.is_empty() {
+                        ui.weak(if filter.is_empty() {
+                            "Rust Analyzer found no workspace declarations. Check that this project contains Rust crates."
+                        } else {
+                            "No workspace declarations match this search."
+                        });
+                    } else {
+                        let symbols_by_crate = workspace_symbol_files_by_crate(
+                            &self.language_server.workspace_symbols,
+                            &self.workspace.rust_crate_roots,
+                        );
+                        for (crate_root, files) in symbols_by_crate {
+                            let active_crate = self.editor.selected_file.as_ref().is_some_and(
+                                |selected| selected.starts_with(&crate_root),
                             );
-                        } else if self.language_server.workspace_symbols.is_empty() {
-                            ui.weak("No workspace symbols match this search.");
-                        }
-                        for object in &self.language_server.workspace_symbols {
-                            let label = format!("{}  {}", object.kind.label(), object.name);
-                            let response = ui.selectable_label(false, label);
-                            response.clone().on_hover_text(format!(
-                                "{} · {}:{}",
-                                object.id.qualified_name(),
-                                object.id.document.display(),
-                                object.range.start.line.saturating_add(1),
-                            ));
-                            if response.clicked() {
-                                requested_workspace_symbol = Some(object.clone());
-                            }
+                            let declaration_count = files.values().map(Vec::len).sum::<usize>();
+                            let crate_label = crate_root.file_name().map_or_else(
+                                || "Other Rust files".to_owned(),
+                                |name| name.to_string_lossy().into_owned(),
+                            );
+                            egui::CollapsingHeader::new(format!(
+                                "{crate_label}  ·  {} files · {declaration_count} declarations",
+                                files.len(),
+                            ))
+                            .id_salt(("ide-workspace-symbol-crate", &crate_root))
+                            .default_open(active_crate)
+                            .show(ui, |ui| {
+                                ui.weak(format!("Cargo crate · {}", crate_root.display()));
+                                for (path, symbols) in files {
+                                    let selected_file = self.editor.selected_file.as_deref()
+                                        == Some(path.as_path());
+                                    let file_label =
+                                        file_display_label(&path, &self.workspace.files);
+                                    let symbol_tree = workspace_symbol_tree(symbols.iter().copied());
+                                    let file = egui::CollapsingHeader::new(format!(
+                                        "{}  ·  {} declarations",
+                                        file_label,
+                                        symbols.len(),
+                                    ))
+                                    .id_salt(("ide-workspace-symbol-file", &path))
+                                    .default_open(selected_file)
+                                    .show(ui, |ui| {
+                                        draw_workspace_symbol_tree(
+                                            ui,
+                                            &symbol_tree,
+                                            self.semantic
+                                                .selected
+                                                .as_ref()
+                                                .map(|selected| &selected.id),
+                                            &mut requested_workspace_symbol,
+                                        );
+                                    });
+                                    file.header_response
+                                        .on_hover_text(path.display().to_string());
+                                }
+                            });
                         }
                     }
                     let outline_document_count = self.semantic.index
                         .documents()
                         .filter(|document| semantic_view::has_semantic_outline(&document.objects))
                         .count();
-                    ui.weak(semantic_view::semantic_explorer_guidance(
-                        outline_document_count,
-                        self.language_server.ready,
-                    ));
-                    if !filter.is_empty() {
-                        ui.separator();
-                        ui.strong("Open-file outlines");
-                    }
-                    if outline_document_count == 0 {
-                        ui.weak("No open-file outlines yet.");
-                    }
-                    for document in self.semantic.index.documents() {
-                        egui::CollapsingHeader::new(document.path.display().to_string())
-                            .id_salt(("ide-symbol-file", &document.path))
-                            .default_open(true)
-                            .show(ui, |ui| {
-                                if !semantic_view::has_semantic_outline(&document.objects) {
-                                    ui.weak("No semantic outline is available for this document.");
-                                } else {
-                                    semantic_view::draw_semantic_outline(
-                                        ui,
-                                        &document.objects,
-                                        document.version,
-                                        self.semantic.match_cache
-                                            .get(&document.path)
-                                            .expect("open semantic documents have cached filters"),
-                                        self.semantic.selected.as_ref(),
-                                        &mut requested_symbol,
-                                        &mut outline_budget,
-                                    );
-                                }
-                            });
-                    }
+                    ui.separator();
+                    egui::CollapsingHeader::new(format!(
+                        "Open-file outlines · {outline_document_count}"
+                    ))
+                    .id_salt("ide-open-file-outlines")
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        ui.weak(semantic_view::semantic_explorer_guidance(
+                            outline_document_count,
+                            self.language_server.ready,
+                        ));
+                        if outline_document_count == 0 {
+                            ui.weak("Open a supported file to inspect its detailed local structure.");
+                        }
+                        for document in self.semantic.index.documents() {
+                            egui::CollapsingHeader::new(document.path.display().to_string())
+                                .id_salt(("ide-symbol-file", &document.path))
+                                .default_open(semantic_document_default_open(
+                                    &document.path,
+                                    self.editor.selected_file.as_deref(),
+                                ))
+                                .show(ui, |ui| {
+                                    if !semantic_view::has_semantic_outline(&document.objects) {
+                                        ui.weak("No semantic outline is available for this document.");
+                                    } else {
+                                        semantic_view::draw_semantic_outline(
+                                            ui,
+                                            &document.objects,
+                                            document.version,
+                                            self.semantic.match_cache
+                                                .get(&document.path)
+                                                .expect("open semantic documents have cached filters"),
+                                            self.semantic.selected.as_ref(),
+                                            &mut requested_symbol,
+                                            &mut outline_budget,
+                                        );
+                                    }
+                                });
+                        }
+                    });
                     if outline_budget.was_truncated() {
                         ui.weak(format!(
                             "Outline display is capped at {} visible objects. Filter the structure to reach more matches.",
@@ -629,7 +846,7 @@ impl IdeApp {
             }
             if let Some(symbol) = requested_workspace_symbol {
                 self.semantic.selected = None;
-                self.interface.inspector_open = true;
+                self.interface.workbench.inspector_visible = true;
                 self.navigate_to_workspace_symbol(&symbol);
             }
         } else {
@@ -648,7 +865,6 @@ impl IdeApp {
                             ui,
                             &self.workspace.file_tree,
                             Path::new(""),
-                            0,
                             &FileTreeView {
                                 files: &self.workspace.files,
                                 documents: &self.editor.documents,

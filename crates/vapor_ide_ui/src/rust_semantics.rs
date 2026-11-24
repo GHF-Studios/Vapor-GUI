@@ -77,6 +77,13 @@ impl CanonicalRustItemKind {
         }
     }
 
+    pub(super) fn supports_named_fields(self) -> bool {
+        matches!(
+            self,
+            Self::Component | Self::Resource | Self::Event | Self::Type
+        )
+    }
+
     fn item_conflicts(self, item: &syn::Item, name: &str) -> bool {
         let (existing_name, declares_type, declares_value) = match item {
             syn::Item::Struct(item) => (
@@ -193,10 +200,20 @@ fn name_style_error(kind: CanonicalRustItemKind, name: &str) -> Option<&'static 
     }
 }
 
+#[cfg(test)]
 pub(super) fn render_canonical_rust_item(
     document: &Path,
     source: &str,
     name: &str,
+) -> Result<String, String> {
+    render_canonical_rust_item_with_fields(document, source, name, "")
+}
+
+pub(super) fn render_canonical_rust_item_with_fields(
+    document: &Path,
+    source: &str,
+    name: &str,
+    field_source: &str,
 ) -> Result<String, String> {
     let Some(kind) = CanonicalRustItemKind::for_document(document) else {
         return Err("Open a canonical Rust module before creating a semantic item.".to_owned());
@@ -207,17 +224,27 @@ pub(super) fn render_canonical_rust_item(
     if name.len() > 128 {
         return Err("Rust item names are limited to 128 bytes.".to_owned());
     }
+    let fields = if kind.supports_named_fields() {
+        parse_template_fields(field_source)?
+    } else if !field_source.trim().is_empty() {
+        return Err(format!(
+            "The {} template does not accept fields.",
+            kind.label()
+        ));
+    } else {
+        Vec::new()
+    };
     let snippet = match kind {
         CanonicalRustItemKind::Component => {
-            format!("#[derive(bevy::prelude::Component)]\npub struct {name};\n")
+            render_struct_template("#[derive(bevy::prelude::Component)]", name, &fields)
         }
         CanonicalRustItemKind::Resource => {
-            format!("#[derive(bevy::prelude::Resource)]\npub struct {name};\n")
+            render_struct_template("#[derive(bevy::prelude::Resource)]", name, &fields)
         }
         CanonicalRustItemKind::Event => {
-            format!("#[derive(bevy::prelude::Event)]\npub struct {name};\n")
+            render_struct_template("#[derive(bevy::prelude::Event)]", name, &fields)
         }
-        CanonicalRustItemKind::Type => format!("pub struct {name};\n"),
+        CanonicalRustItemKind::Type => render_struct_template("", name, &fields),
         CanonicalRustItemKind::Function | CanonicalRustItemKind::System => {
             format!("pub fn {name}() {{\n}}\n")
         }
@@ -275,6 +302,60 @@ pub(super) fn render_canonical_rust_item(
         );
     }
     Ok(updated)
+}
+
+fn parse_template_fields(source: &str) -> Result<Vec<String>, String> {
+    if source.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let normalized_fields = source
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            if line.ends_with(',') {
+                line.to_owned()
+            } else {
+                format!("{line},")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let wrapped = format!("struct __VaporTemplate {{\n{normalized_fields}\n}}");
+    let parsed = syn::parse_str::<syn::ItemStruct>(&wrapped)
+        .map_err(|_| "Enter Rust named fields as `name: Type`, one per line.".to_owned())?;
+    let syn::Fields::Named(fields) = parsed.fields else {
+        return Err("Use named fields in `name: Type` form.".to_owned());
+    };
+    fields
+        .named
+        .into_iter()
+        .map(|field| {
+            if !field.attrs.is_empty() {
+                return Err("Template fields cannot include attributes.".to_owned());
+            }
+            let Some(name) = field.ident else {
+                return Err("Use named fields in `name: Type` form.".to_owned());
+            };
+            Ok(format!("    pub {name}: {},", field.ty.into_token_stream()))
+        })
+        .collect()
+}
+
+fn render_struct_template(derives: &str, name: &str, fields: &[String]) -> String {
+    let derive_line = if derives.is_empty() {
+        String::new()
+    } else {
+        format!("{derives}\n")
+    };
+    if fields.is_empty() {
+        format!("{derive_line}pub struct {name};\n")
+    } else {
+        format!(
+            "{derive_line}pub struct {name} {{\n{}\n}}\n",
+            fields.join("\n")
+        )
+    }
 }
 
 pub(super) fn convention_diagnostics(
@@ -1087,7 +1168,7 @@ pub(super) fn parse_workspace_symbols(
     let canonical_root = workspace_root
         .canonicalize()
         .unwrap_or_else(|_| workspace_root.to_path_buf());
-    symbols
+    let mut objects = symbols
         .iter()
         .take(WORKSPACE_SYMBOL_LIMIT)
         .filter_map(|symbol| {
@@ -1141,7 +1222,14 @@ pub(super) fn parse_workspace_symbols(
                 children: Vec::new(),
             })
         })
-        .collect()
+        .collect::<Vec<_>>();
+    objects.sort_by(|left, right| {
+        left.id
+            .document
+            .cmp(&right.id.document)
+            .then_with(|| left.id.qualified_name().cmp(&right.id.qualified_name()))
+    });
+    objects
 }
 
 pub(super) fn resolve_workspace_symbol_selection(

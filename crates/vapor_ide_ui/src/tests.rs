@@ -1,5 +1,6 @@
 use super::rust_semantics::{
-    CanonicalRustItemKind, parse_semantic_symbols, render_canonical_rust_item, rust_lsp_symbol_kind,
+    CanonicalRustItemKind, parse_semantic_symbols, render_canonical_rust_item,
+    render_canonical_rust_item_with_fields, rust_lsp_symbol_kind,
 };
 use super::{
     Document, EditPreviewApplyError, ProblemRow, ProblemStore, ReferenceLocation,
@@ -1048,6 +1049,86 @@ fn workspace_symbol_search_debounce_waits_only_for_the_current_input_window() {
 }
 
 #[test]
+fn structure_browse_requests_all_symbols_once_rust_analyzer_is_ready() {
+    use super::language_server::workspace_symbol_request_is_needed;
+
+    assert!(workspace_symbol_request_is_needed("", None, true, false));
+    assert!(!workspace_symbol_request_is_needed(
+        "",
+        Some(""),
+        true,
+        false
+    ));
+    assert!(!workspace_symbol_request_is_needed("", None, false, false));
+    assert!(!workspace_symbol_request_is_needed(
+        "Ship", None, true, true
+    ));
+}
+
+#[test]
+fn workspace_structure_tree_nests_methods_under_their_rust_container() {
+    use super::workspace_view::workspace_symbol_tree;
+    use vapor_gui_core::semantic::{SemanticObject, SemanticObjectId, SemanticRange};
+
+    let declaration = |name: &str, kind, path: &[&str]| SemanticObject {
+        id: SemanticObjectId::new(
+            "rust",
+            "crates/game/src/components.rs",
+            path.iter().map(|part| (*part).to_owned()).collect(),
+        ),
+        kind,
+        name: name.to_owned(),
+        detail: None,
+        range: SemanticRange::default(),
+        selection_range: SemanticRange::default(),
+        attributes: Vec::new(),
+        children: Vec::new(),
+    };
+    let symbols = [
+        declaration("Ship", SemanticObjectKind::Struct, &["components", "Ship"]),
+        declaration(
+            "tick",
+            SemanticObjectKind::Method,
+            &["components", "Ship", "tick"],
+        ),
+    ];
+
+    let tree = workspace_symbol_tree(symbols.iter());
+    let ship = &tree.children["components"].children["Ship"];
+
+    assert_eq!(ship.declarations[0].name, "Ship");
+    assert_eq!(ship.children["tick"].declarations[0].name, "tick");
+}
+
+#[test]
+fn workspace_structure_groups_symbols_by_their_nearest_cargo_crate() {
+    use super::workspace_view::workspace_symbol_files_by_crate;
+    use vapor_gui_core::semantic::{SemanticObject, SemanticObjectId, SemanticRange};
+
+    let declaration = |file: &str, name: &str| SemanticObject {
+        id: SemanticObjectId::new("rust", file, vec![name.to_owned()]),
+        kind: SemanticObjectKind::Struct,
+        name: name.to_owned(),
+        detail: None,
+        range: SemanticRange::default(),
+        selection_range: SemanticRange::default(),
+        attributes: Vec::new(),
+        children: Vec::new(),
+    };
+    let symbols = vec![
+        declaration("crates/engine/src/lib.rs", "Engine"),
+        declaration("crates/game/src/lib.rs", "Game"),
+    ];
+    let roots = BTreeSet::from([PathBuf::from("crates/engine"), PathBuf::from("crates/game")]);
+
+    let grouped = workspace_symbol_files_by_crate(&symbols, &roots);
+
+    assert_eq!(grouped.len(), 2);
+    assert_eq!(grouped[Path::new("crates/engine")].len(), 1);
+    assert_eq!(grouped[Path::new("crates/game")].len(), 1);
+}
+
+#[test]
 fn superseded_document_symbol_requests_are_scoped_to_the_same_file() {
     let pending = |request, path: &str| super::PendingLspRequest {
         request,
@@ -1431,6 +1512,16 @@ fn workspace_symbol_responses_require_the_current_root_query_and_document_revisi
         " Ship ",
         &documents,
     ));
+    let browse_request = super::PendingLspRequest {
+        query: Some(String::new()),
+        ..request.clone()
+    };
+    assert!(workspace_symbol_request_is_current(
+        &browse_request,
+        Some(&root),
+        "",
+        &documents,
+    ));
     assert!(!workspace_symbol_request_is_current(
         &request,
         Some(Path::new("/fixture/other")),
@@ -1693,6 +1784,44 @@ fn canonical_rust_item_templates_cover_each_owned_module_kind() {
         Some(CanonicalRustItemKind::RunCondition)
     ));
     assert!(CanonicalRustItemKind::for_document(Path::new("src/lib.rs")).is_none());
+}
+
+#[test]
+fn canonical_data_templates_accept_typed_named_fields() {
+    let rendered = render_canonical_rust_item_with_fields(
+        Path::new("src/components.rs"),
+        "",
+        "Ship",
+        "name: String\nposition: Vec3",
+    )
+    .unwrap();
+
+    assert!(rendered.contains("#[derive(bevy::prelude::Component)]"));
+    assert!(rendered.contains("pub struct Ship {"));
+    assert!(rendered.contains("pub name: String,"));
+    assert!(rendered.contains("pub position: Vec3,"));
+}
+
+#[test]
+fn canonical_data_templates_reject_invalid_or_inapplicable_fields() {
+    assert!(
+        render_canonical_rust_item_with_fields(
+            Path::new("src/components.rs"),
+            "",
+            "Ship",
+            "position Vec3",
+        )
+        .is_err()
+    );
+    assert!(
+        render_canonical_rust_item_with_fields(
+            Path::new("src/functions.rs"),
+            "",
+            "create_ship",
+            "position: Vec3",
+        )
+        .is_err()
+    );
 }
 
 #[test]

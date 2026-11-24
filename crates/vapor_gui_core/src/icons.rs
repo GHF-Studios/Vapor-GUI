@@ -1,10 +1,10 @@
-use eframe::egui::{self, Pos2, Rect, Stroke, Vec2};
+use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use vapor_console_core::ConsoleLevel;
 
-/// Paint a small severity mark from vector primitives, without font glyphs.
+/// Paint the shared console's severity mark using vector primitives.
 pub fn console_mark(ui: &mut egui::Ui, level: ConsoleLevel) {
     let size = Vec2::splat(13.0);
-    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     let painter = ui.painter();
     let color = match level {
         ConsoleLevel::Trace | ConsoleLevel::Debug => ui.visuals().weak_text_color(),
@@ -100,5 +100,79 @@ pub fn console_mark(ui: &mut egui::Ui, level: ConsoleLevel) {
             painter.circle_stroke(center, 4.5, stroke);
             painter.circle_filled(center, 1.5, color);
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdeIcon {
+    File,
+    Folder,
+    Search,
+    Run,
+    Close,
+    Check,
+    Warning,
+}
+
+pub fn draw_icon(ui: &mut egui::Ui, icon: IdeIcon, size: f32) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
+    let color = if response.hovered() {
+        ui.visuals().strong_text_color()
+    } else {
+        ui.visuals().weak_text_color()
+    };
+    paint_icon(ui.painter(), rect.shrink(2.0), icon, color);
+    response
+}
+
+fn paint_icon(painter: &egui::Painter, rect: Rect, icon: IdeIcon, color: Color32) {
+    let stroke = Stroke::new(1.4, color);
+    let point = |x: f32, y: f32| {
+        Pos2::new(
+            rect.left() + rect.width() * x,
+            rect.top() + rect.height() * y,
+        )
+    };
+    let lines: &[(f32, f32, f32, f32)] = match icon {
+        IdeIcon::File => &[
+            (0.22, 0.08, 0.62, 0.08),
+            (0.62, 0.08, 0.80, 0.27),
+            (0.80, 0.27, 0.80, 0.92),
+            (0.80, 0.92, 0.22, 0.92),
+            (0.22, 0.92, 0.22, 0.08),
+            (0.62, 0.08, 0.62, 0.28),
+            (0.62, 0.28, 0.80, 0.28),
+        ],
+        IdeIcon::Folder => &[
+            (0.08, 0.27, 0.42, 0.27),
+            (0.42, 0.27, 0.52, 0.42),
+            (0.52, 0.42, 0.92, 0.42),
+            (0.92, 0.42, 0.82, 0.88),
+            (0.82, 0.88, 0.08, 0.88),
+            (0.08, 0.88, 0.08, 0.27),
+        ],
+        IdeIcon::Search => &[(0.64, 0.64, 0.94, 0.94)],
+        IdeIcon::Run => &[
+            (0.28, 0.12, 0.82, 0.50),
+            (0.82, 0.50, 0.28, 0.88),
+            (0.28, 0.88, 0.28, 0.12),
+        ],
+        IdeIcon::Close => &[(0.2, 0.2, 0.8, 0.8), (0.8, 0.2, 0.2, 0.8)],
+        IdeIcon::Check => &[(0.1, 0.54, 0.40, 0.84), (0.40, 0.84, 0.92, 0.16)],
+        IdeIcon::Warning => &[
+            (0.50, 0.08, 0.94, 0.88),
+            (0.94, 0.88, 0.06, 0.88),
+            (0.06, 0.88, 0.50, 0.08),
+            (0.50, 0.34, 0.50, 0.59),
+        ],
+    };
+    for &(x1, y1, x2, y2) in lines {
+        painter.line_segment([point(x1, y1), point(x2, y2)], stroke);
+    }
+    if icon == IdeIcon::Search {
+        painter.circle_stroke(point(0.40, 0.40), rect.width() * 0.27, stroke);
+    }
+    if icon == IdeIcon::Warning {
+        painter.circle_filled(point(0.50, 0.73), rect.width() * 0.035, color);
     }
 }

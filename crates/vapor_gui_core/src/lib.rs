@@ -6,6 +6,7 @@ pub mod icons;
 pub mod panel;
 pub mod rhai_semantics;
 pub mod semantic;
+pub mod theme;
 pub mod workspace_tree;
 
 pub use vapor_console_core::{
@@ -29,7 +30,6 @@ pub enum GuiMode {
 pub struct GuiLaunch {
     pub workspace: Option<PathBuf>,
     pub app_root: Option<PathBuf>,
-    pub first_launch: bool,
 }
 
 pub trait GuiProduct {

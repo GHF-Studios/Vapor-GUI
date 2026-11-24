@@ -6,39 +6,78 @@ impl IdeApp {
         let open_documents = self.editor.documents.keys().cloned().collect::<Vec<_>>();
         let mut close_document = None;
         if !open_documents.is_empty() {
-            ui.horizontal_wrapped(|ui| {
-                for path in open_documents {
-                    let label = document_tab_label(&path, &self.editor.documents);
-                    let dirty = self
-                        .editor
-                        .documents
-                        .get(&path)
-                        .is_some_and(Document::is_dirty);
-                    let selected = self.editor.selected_file.as_ref() == Some(&path);
-                    if ui
-                        .selectable_label(
-                            selected,
-                            format!("{label}{}", if dirty { " *" } else { "" }),
-                        )
-                        .clicked()
-                    {
-                        self.editor.selected_file = Some(path.clone());
-                    }
-                    if ui
-                        .add_enabled(
-                            !dirty && self.workspace.pending.is_none(),
-                            egui::Button::new("Close"),
-                        )
-                        .on_hover_text(if dirty {
-                            "Save this file before closing it."
-                        } else {
-                            "Close file"
-                        })
-                        .clicked()
-                    {
-                        close_document = Some(path.clone());
-                    }
-                }
+            ui.horizontal(|ui| {
+                vapor_gui_core::icons::draw_icon(ui, vapor_gui_core::icons::IdeIcon::File, 16.0);
+                ui.label(
+                    egui::RichText::new("FILES")
+                        .small()
+                        .strong()
+                        .color(vapor_gui_core::theme::IDE_PALETTE.muted_text),
+                );
+                ui.separator();
+                egui::ScrollArea::horizontal()
+                    .id_salt("ide-open-document-tabs")
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            for path in open_documents {
+                                let label = document_tab_label(&path, &self.editor.documents);
+                                let dirty = self
+                                    .editor
+                                    .documents
+                                    .get(&path)
+                                    .is_some_and(Document::is_dirty);
+                                let selected = self.editor.selected_file.as_ref() == Some(&path);
+                                let fill = if selected {
+                                    vapor_gui_core::theme::IDE_PALETTE.raised
+                                } else {
+                                    vapor_gui_core::theme::IDE_PALETTE.panel
+                                };
+                                egui::Frame::new()
+                                    .fill(fill)
+                                    .stroke(egui::Stroke::new(
+                                        1.0,
+                                        if selected {
+                                            vapor_gui_core::theme::IDE_PALETTE.accent
+                                        } else {
+                                            vapor_gui_core::theme::IDE_PALETTE.border
+                                        },
+                                    ))
+                                    .corner_radius(egui::CornerRadius::same(4))
+                                    .inner_margin(egui::Margin::symmetric(5, 2))
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            let title = egui::RichText::new(format!(
+                                                "{label}{}",
+                                                if dirty { " *" } else { "" }
+                                            ))
+                                            .color(if selected {
+                                                vapor_gui_core::theme::IDE_PALETTE.text
+                                            } else {
+                                                vapor_gui_core::theme::IDE_PALETTE.muted_text
+                                            });
+                                            if ui.selectable_label(selected, title).clicked() {
+                                                self.editor.selected_file = Some(path.clone());
+                                            }
+                                            if ui
+                                                .add_enabled(
+                                                    !dirty && self.workspace.pending.is_none(),
+                                                    egui::Button::new("x").small(),
+                                                )
+                                                .on_hover_text(if dirty {
+                                                    "Save this file before closing it."
+                                                } else {
+                                                    "Close file"
+                                                })
+                                                .clicked()
+                                            {
+                                                close_document = Some(path.clone());
+                                            }
+                                        });
+                                    });
+                            }
+                        });
+                    });
             });
             ui.separator();
         }
@@ -185,7 +224,15 @@ impl IdeApp {
         let mut request_hover = false;
         let mut request_formatting = false;
         ui.horizontal(|ui| {
-            ui.strong(path.display().to_string());
+            let visible_path = self
+                .workspace
+                .root
+                .as_deref()
+                .and_then(|root| relative_workspace_path(root, &path))
+                .map(|relative| relative.display().to_string())
+                .unwrap_or_else(|| path.display().to_string());
+            ui.strong(visible_path)
+                .on_hover_text(path.display().to_string());
             ui.weak(vapor_gui_core::code_editor::language_for_path(&path).unwrap_or("Plain text"));
             if document.is_dirty() {
                 ui.colored_label(egui::Color32::YELLOW, "Unsaved");
@@ -195,34 +242,48 @@ impl IdeApp {
                     "Ln {}, Col {}",
                     self.editor.cursor_position.0, self.editor.cursor_position.1
                 ));
-                ui.weak(&self.language_server.status);
-                if ui
-                    .add_enabled(self.language_server.ready, egui::Button::new("Hover"))
-                    .clicked()
-                {
-                    request_hover = true;
-                }
-                if ui
-                    .add_enabled(self.language_server.ready, egui::Button::new("Definition"))
-                    .on_hover_text("Go to Definition | F12")
-                    .clicked()
-                {
-                    request_definition = true;
-                }
-                if ui
-                    .add_enabled(self.language_server.ready, egui::Button::new("References"))
-                    .on_hover_text("Find references to the symbol under the cursor")
-                    .clicked()
-                {
-                    request_references = true;
-                }
-                if ui
-                    .add_enabled(self.language_server.ready, egui::Button::new("Format"))
-                    .on_hover_text("Format this Rust file with the pinned Rust Analyzer")
-                    .clicked()
-                {
-                    request_formatting = true;
-                }
+                ui.weak(if self.language_server.ready {
+                    "LSP ready"
+                } else {
+                    "LSP offline"
+                })
+                .on_hover_text(&self.language_server.status);
+                ui.menu_button("Code", |ui| {
+                    if ui
+                        .add_enabled(self.language_server.ready, egui::Button::new("Hover"))
+                        .clicked()
+                    {
+                        request_hover = true;
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            self.language_server.ready,
+                            egui::Button::new("Go to definition  F12"),
+                        )
+                        .clicked()
+                    {
+                        request_definition = true;
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            self.language_server.ready,
+                            egui::Button::new("Find references"),
+                        )
+                        .clicked()
+                    {
+                        request_references = true;
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(self.language_server.ready, egui::Button::new("Format file"))
+                        .clicked()
+                    {
+                        request_formatting = true;
+                        ui.close();
+                    }
+                });
             });
         });
         ui.separator();

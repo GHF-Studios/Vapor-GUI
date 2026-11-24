@@ -799,7 +799,7 @@ pub(super) fn connect_service(
     let application_executable = std::env::current_exe()
         .map_err(|error| vapor_client::ClientError::Io(error.to_string()))?;
     let service_path = service_sibling_path(&application_executable);
-    Client::connect_or_start(
+    let mut client = Client::connect_or_start(
         &service_path,
         ClientHostConfig {
             application_executable,
@@ -810,5 +810,7 @@ pub(super) fn connect_service(
             legacy_storage: Default::default(),
             state_directory: None,
         },
-    )
+    )?;
+    client.set_origin(vapor_client_protocol::ClientOrigin::Ide);
+    Ok(client)
 }

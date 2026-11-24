@@ -12,18 +12,37 @@ workspace. The IDE loads its workspace file list through the service. Open files
 appear as tabs; unsaved edits are marked with `*` and must be saved before
 switching workspaces or running a managed workspace operation.
 
-Use **Files** to browse the workspace or **Structure** to browse semantic
-outlines for open files. Typing in Structure also searches Rust declarations
-across the workspace when Rust Analyzer is connected; other format outlines are
-available after opening those files. Selecting a workspace search result opens
-its current source and selects the matching declaration in the Inspector; if
-the declaration moved, disappeared, or remains ambiguous, the IDE declines to
-select it. Rust files use module labels without `.rs`; `mod.rs` uses its module
-path, adding crate context when duplicate paths need disambiguation.
-Ordinary workspace folders sort before files. Within Cargo crate roots, files
-and directories follow one alphabetical order.
+The workbench adapts by available width: below 760 logical points, Explorer,
+Editor, and Inspector become single-pane views; between 760 and 1,160 points,
+Explorer stays docked and Inspector becomes a movable window; wider windows use
+docked side panels. Menus and workspace actions occupy separate rows, while
+Explorer, Inspector, and the bottom tools use one shared panel-header style.
+View can hide docked Explorer and Inspector panels; in compact layout it selects
+which single pane is visible. The bottom Problems / Console / Tasks window
+remains resizable. The shared IDE theme and small vector icons are drawn from
+code, so they do not depend on host Unicode glyph coverage. The workspace name
+and open-file breadcrumb stay workspace-relative; their hover details expose
+the full path when needed.
 
-Selecting a semantic object opens its Inspector entry. Rust Analyzer provides
+Use **Files** to browse the workspace or **Structure** to browse Rust
+declarations across the workspace. Structure loads declarations when Rust
+Analyzer is ready; its search field is separate from the Files filter. Results
+are grouped by Cargo crate, source file, and Rust container path; the active
+crate and file open by default.
+Selecting a declaration opens its current source and selects the matching
+declaration in the Inspector; if the declaration moved, disappeared, or
+remains ambiguous, the IDE declines to select it. **Open-file outlines** are a
+separate secondary view for detailed local projections of supported formats.
+Rust files use module labels without `.rs`; `mod.rs` uses its module path,
+adding crate context when duplicate paths need disambiguation. Ordinary
+workspace folders sort before files. Within Cargo crate roots, files and
+directories follow one alphabetical order. The Files tree initially opens only
+the selected file's path; filtering expands matching folders.
+
+Selecting a semantic object opens its Inspector entry. The Inspector keeps the
+selected object's identity and source location at the top, with diagnostics,
+attributes, and members grouped into independently collapsible sections so a
+large type does not push every other action off screen. Rust Analyzer provides
 resolved symbols and LSP navigation; a syntax pass adds recognized Bevy types,
 fields, attributes, and conventional `systems.rs` / `run_conditions.rs`
 classification. Selecting an indexed symbol highlights its exact source range;
@@ -65,7 +84,9 @@ complete structured records are identical. Producer, domain, scope, severity,
 and text filters apply to the whole grouped issue, so filtering for a linked
 producer does not hide its primary diagnostic. Diagnostic rows are virtualized
 so rendering cost follows the visible range, even when the stored problem set
-is large.
+is large. Problems filters stay on one horizontal scroll row so they do not
+make the bottom tool window grow from its contents. It opens at 190 px and
+remains user-resizable between 140 and 300 px from its divider.
 
 Rust Analyzer `publishDiagnostics` notifications are normalized once by the
 Vapor service into the shared protocol diagnostic shape. The IDE checks the
@@ -109,8 +130,13 @@ file-creation/deletion edits from rename previews are rejected.
 - **File → New Rust item** provides syntax-checked templates for components,
   resources, events, types, functions, systems, run conditions, constants, and
   statics when a matching module under the active Cargo crate's `src/` tree is
-  open. It follows the Rust type, function, and constant naming conventions,
-  edits only the open buffer, and leaves writing to explicit Save. Duplicate
+  open. The selected canonical module supplies the fixed template; its name is
+  a typed parameter; data templates also accept optional named `field: Type`
+  parameters entered as separate field-name and Rust-type controls, then parsed
+  as Rust syntax. Generated Rust is previewed before
+  insertion. It follows Rust type, function, and constant naming conventions,
+  edits only the
+  open buffer, and leaves writing to explicit Save. Duplicate
   declarations/imports, malformed source, invalid identifiers, and files at the
   semantic indexing size limit are rejected. **New empty file** remains the
   deliberate raw-file escape.
@@ -119,12 +145,34 @@ file-creation/deletion edits from rename previews are rejected.
   `run_conditions`, `statics`, `systems`, or `types`) through the shared client
   service. The service validates the selected parent, creates the standard
   Rust module path, and adds its declaration to the parent source as one guarded
-  operation. This keeps routine module creation inside the canonical project
+  operation. The IDE previews the exact new path and the fixed module's
+  documentation before creation. This keeps routine module creation inside the canonical project
   structure while leaving the explicit empty-file action available for unusual
   layouts.
+- Atlas-aware Rust annotations and review tracking are a primary IDE workstream,
+  but are not yet implemented. Atlas records are authored in the Atlas Git
+  repository; Rust metadata will link source items to those records and expose
+  generated indexes and review impact. The separate hosted read service belongs
+  in `Vapor-Platform-Server/Vapor-Atlas-Server`; the existing Docs Server is a
+  deprecated legacy documentation path. The exact annotation grammar and
+  relation registry must be implemented as a shared contract before the IDE
+  offers a Save action for them.
 - Create content projects in Studio's **Create** workflow. That service-owned
   operation registers the project in `Workspace.vapor.toml` and produces its
   role manifest and Cargo files together; the IDE does not create detached role
   manifests. The IDE's **File → New Vapor content** operation uses this same
   service action, then refreshes the workspace and opens the created manifest.
-  More complete structured manifest editing remains future work.
+  The wizard presents the fixed Vapor content-kind vocabulary, collects
+  identity/version and compatible dependency selectors, and shows a no-write
+  review before create. Invalid drafts remain on review with a validation
+  message; creating source does not start a build. Adding a content kind or
+  template remains a coordinated Vapor product change, not an IDE-authored
+  extension. More complete structured manifest editing remains future work.
+
+The content chooser separates **Packs** from **Content** and describes each
+canonical kind in its product role. Packagepack is the playable root and can
+carry its built executable; Enginepack, Gamepack, and Modpack are typed bundle
+manifests. Engine, Game, EngineMod, GameMod, ExtensionMod, and Crate describe
+implementation content that can be built and reused by compositions. This is a
+fixed catalog over Vapor's existing vocabulary, not a user-extensible template
+system.

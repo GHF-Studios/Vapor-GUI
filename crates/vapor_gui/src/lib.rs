@@ -14,8 +14,6 @@ struct Args {
     workspace: Option<PathBuf>,
     #[arg(long)]
     app_root: Option<PathBuf>,
-    #[arg(long)]
-    first_launch: bool,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -47,7 +45,6 @@ pub fn run(default_mode: GuiMode) -> eframe::Result<()> {
     let launch = GuiLaunch {
         workspace: args.workspace,
         app_root: args.app_root,
-        first_launch: args.first_launch,
     };
     match mode {
         GuiMode::Chooser => run_product(ChooserProduct, launch),
@@ -281,9 +278,6 @@ impl GuiProduct for InstallerProduct {
         _context: &eframe::CreationContext<'_>,
         launch: GuiLaunch,
     ) -> Box<dyn eframe::App> {
-        Box::new(vapor_installer_ui::InstallerApp::new(
-            launch.app_root,
-            launch.first_launch,
-        ))
+        Box::new(vapor_installer_ui::InstallerApp::new(launch.app_root))
     }
 }
