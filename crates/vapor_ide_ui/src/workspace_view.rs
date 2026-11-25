@@ -290,6 +290,7 @@ impl IdeApp {
                 }
                 ui.separator();
                 for (label, operation) in [
+                    ("Resolve Cargo lockfile", WorkspaceToolOperation::ResolveLockfile),
                     ("Check", WorkspaceToolOperation::Check),
                     ("Test", WorkspaceToolOperation::Test),
                     ("Build", WorkspaceToolOperation::Build),

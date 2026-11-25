@@ -11,6 +11,7 @@ binaries = [
     "vapor-studio",
     "vapor-ide",
     "vapor-installer-gui",
+    "vapor-setup",
 ]
 
 [toolchain]

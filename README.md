@@ -13,5 +13,13 @@ completion; broader LSP features and external dependency source editing remain
 under development.
 See [`docs/ide.md`](docs/ide.md) for the current IDE workflow and its semantic
 indexing/build boundaries.
+
+`vapor-setup` opens the standalone installer UI when launched without a
+subcommand. `vapor-setup install [--channel stable]` installs and activates the
+latest signed release without opening a window, using the same verified
+acquisition path. Add `--print-root` to print only the installed release root
+for automation, without duplicating Vapor's OS-specific User Data path. This
+supports managed bootstrap automation while keeping the downloadable setup
+executable as the sole entry point.
 The precompiled `vapor-installer` remains available as the recovery path when
 the graphical products are not installed.
