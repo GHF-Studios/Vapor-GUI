@@ -4159,6 +4159,7 @@ dependencies = [
  "vapor_core",
  "vapor_gui_core",
  "vapor_ide_ui",
+ "vapor_installer",
  "vapor_installer_ui",
  "vapor_launcher_ui",
  "vapor_studio_ui",
