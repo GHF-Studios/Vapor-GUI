@@ -1,0 +1,4 @@
+# The release pipeline downloads vapor-setup.exe as a standalone payload.
+# Link the target's static unwinder so that bootstrap binary has no DLL sidecar.
+[target.x86_64-pc-windows-gnullvm]
+rustflags = ["-C", "target-feature=+crt-static"]
