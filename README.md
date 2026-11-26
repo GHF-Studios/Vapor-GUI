@@ -23,3 +23,8 @@ supports managed bootstrap automation while keeping the downloadable setup
 executable as the sole entry point.
 The precompiled `vapor-installer` remains available as the recovery path when
 the graphical products are not installed.
+
+For Windows `x86_64-pc-windows-gnullvm` releases, the setup executable links
+the target's static unwind runtime. The signed bootstrap payload can therefore
+be launched by itself; other Vapor executables may still use the
+`libunwind.dll` shipped in the full app archive.
