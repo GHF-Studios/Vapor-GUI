@@ -25,6 +25,7 @@ pub enum GuiMode {
     Installer,
     Setup,
     Ide,
+    Cleanup,
 }
 
 #[derive(Debug, Clone, Default)]
