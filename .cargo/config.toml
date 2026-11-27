@@ -1,4 +1,4 @@
-# The release pipeline downloads vapor-setup.exe as a standalone payload.
-# Link the target's static unwinder so that bootstrap binary has no DLL sidecar.
+# The setup download is a single executable. Keep the Windows CRT static and
+# link LLVM-MinGW runtime libraries statically, including Rust's unwinder.
 [target.x86_64-pc-windows-gnullvm]
-rustflags = ["-C", "target-feature=+crt-static"]
+rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=-static"]
