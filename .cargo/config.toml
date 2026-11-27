@@ -1,4 +1,4 @@
-# The setup download is a single executable. Keep the Windows CRT static and
-# link LLVM-MinGW runtime libraries statically, including Rust's unwinder.
+# Keep the Windows C runtime static for the standalone bootstrap.
+# This does not guarantee that LLVM's unwinder is linked statically.
 [target.x86_64-pc-windows-gnullvm]
-rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=-static"]
+rustflags = ["-C", "target-feature=+crt-static"]
