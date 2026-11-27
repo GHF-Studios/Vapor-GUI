@@ -24,7 +24,8 @@ executable as the sole entry point.
 The precompiled `vapor-installer` remains available as the recovery path when
 the graphical products are not installed.
 
-For Windows `x86_64-pc-windows-gnullvm` releases, the setup executable links
-the target's static unwind runtime. The signed bootstrap payload can therefore
-be launched by itself; other Vapor executables may still use the
-`libunwind.dll` shipped in the full app archive.
+For Windows `x86_64-pc-windows-gnullvm`, the setup target enables the static C
+runtime. A fresh Vapor-managed development build was verified to have no
+`libunwind.dll` import. The standalone release packager independently rejects
+any setup executable that still imports that DLL; the full app archive keeps
+`libunwind.dll` for other executables that need it.
